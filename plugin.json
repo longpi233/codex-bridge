@@ -1,0 +1,13 @@
+{
+  "name": "codex-bridge",
+  "displayName": "Codex GPT Bridge",
+  "version": "0.2.0",
+  "homepage": "https://github.com/longpi233/codex-bridge",
+  "repository": "https://github.com/longpi233/codex-bridge",
+  "description": "Integrate OpenAI Codex CLI GPT models (e.g. gpt-6.2-sol, gpt-6.2-astra) into Antigravity for cross-model verification, subagent delegation, and live quota/reset-time-aware task routing.",
+  "suggestedPrompts": [
+    "Check my Codex account quota and reset time, then recommend which GPT model to use",
+    "Ask Codex (gpt-6.2-astra) to review and verify my recent code changes",
+    "Delegate a read-only security and edge-case audit to the Codex worker subagent"
+  ]
+}
