@@ -16,16 +16,18 @@ Use this skill whenever you want a **second opinion from a GPT model**, need **c
 
 Before dispatching a non-trivial Codex task, call `codex_quota_status`:
 
-- **5-hour primary window (`primary5hWindow`)** and **7-day secondary window (`secondary7dWindow`)** report `usedPercent`, `remainingPercent`, `resetsAtLocal`, and `minutesUntilReset`.
+- **5-hour primary window (`primary5hWindow`)** and **7-day secondary window (`secondary7dWindow`)** report `usedPercent`, `remainingPercent`, `resetsAtLocal`, and `minutesUntilReset` (single-window plans without a 5h limit, such as weekly-only Pro plans, automatically normalize into `secondary7dWindow`).
 - **`pacingMetrics`** computes `surplusRatio = remainingPercent / remainingWindowTimePercent`. A ratio `> 1.0` means your remaining quota outpaces the remaining time before reset.
 - Use `recommendation` (`tier`, `strategy`, `suggestedUseCases`, `avoidUseCases`) to decide **whether** and **how** to delegate:
 
 | Tier | Condition | Recommended Model & Effort | Strategy & Diverse Use Cases |
 | :--- | :--- | :--- | :--- |
+| `unlimited` | `credits.unlimited == true` | `gpt-6.2-astra` (`high`) or `gpt-6.2-sol` (`medium`) | **Free delegation**: deep architecture/security audits, pre-merge reviews, parallel subtasks without rolling window caps. |
 | `use_it_or_lose_it` | Weekly reset <=24h with surplus >=1.5x (or <=6h & >=8%), OR 5h reset <=60m with >=25% left | `gpt-6.2-astra` (`xhigh` / `high`) or parallel `gpt-6.2-sol` (`high`) | **Maximize burn before reset**: deep architecture/security audits, parallel background jobs/workers across modules, test-suite generation, refactoring proposals. |
-| `abundant` | >= 50% remaining on both windows | `gpt-6.2-astra` (`high`) or `gpt-6.2-sol` (`medium`/`high`) | **Free delegation**: cross-model design verification, pre-merge `codex_review`, bounded implementation subtasks. |
+| `abundant` | >= 50% remaining on active window(s) | `gpt-6.2-astra` (`high`) or `gpt-6.2-sol` (`medium`/`high`) | **Free delegation**: cross-model design verification, pre-merge `codex_review`, bounded implementation subtasks. |
 | `moderate_surplus` | 20%–49% remaining, but 7d surplus >=1.2x or 5h resets <=90m | `gpt-6.2-sol` (`high`) or `gpt-6.2-astra` (`medium`) | **Selective deep or standard**: focused `codex_review` on uncommitted diffs, targeted `astra` audit on high-risk paths (auth/concurrency/data). |
 | `moderate` | 20%–49% remaining, normal pacing | `gpt-6.2-sol` (`medium`) | **Focused verification**: single-module diff review, concrete bug/API contract checks. |
+| `api_payg` | API-key pay-as-you-go account (no 5h/7d windows) | `gpt-6.2-sol` (`medium`) or `gpt-6.2-astra` (`high`) | **Cost-aware delegation**: standard reviews with `gpt-6.2-sol`; reserve `gpt-6.2-astra` for high-risk or complex tasks. |
 | `conserve_5h_short_wait` | 5h <20% & resets <=60m, while 7d >=25% | `gpt-6.2-sol` (`low`) now | **Defer heavy work**: run only tiny sanity checks now and queue deep `astra` reviews after the 5h reset. |
 | `conserve` | < 20% remaining with long wait | `gpt-6.2-sol` (`low`) | **High-ROI only**: concise read-only checks on critical diffs or specific error traces. |
 | `exhausted` | < 3% remaining or blocked | None | **Wait for reset**: report `resetsAtLocal` to the user and verify locally (or ask if they want to use a reset credit). |

@@ -71,9 +71,58 @@ def test_unit_fixes():
     except ValueError as exc:
         assert "boolean" in str(exc)
 
-    # 4. Missing rate-limit windows -> unknown, NOT abundant
+    # 4. Missing rate-limit windows & Pro/unlimited/API-key normalization
     rec = mod._compute_recommendation(None, None, None)
     assert rec["tier"] == "unknown", rec
+
+    rec_blocked = mod._compute_recommendation(False, None, None)
+    assert rec_blocked["tier"] == "exhausted" and rec_blocked["allowDelegation"] is False, rec_blocked
+
+    rec_unlim = mod._compute_recommendation(True, None, None, credits={"unlimited": True})
+    assert rec_unlim["tier"] == "unlimited" and rec_unlim["allowDelegation"] is True, rec_unlim
+
+    rec_api = mod._compute_recommendation(True, None, None, account={"type": "apiKey"})
+    assert rec_api["tier"] == "api_payg" and rec_api["allowDelegation"] is True, rec_api
+
+    # Pro plan reporting only a 7d weekly window inside `primary` (no 5h limit)
+    now_ts = time.time()
+    p_norm, s_norm = mod._classify_windows(
+        {"usedPercent": 60, "windowDurationMins": 10080, "resetsAt": now_ts + 3 * 3600},
+        None,
+    )
+    assert p_norm is None and s_norm is not None and s_norm["windowDurationMins"] == 10080, (p_norm, s_norm)
+    rec_pro_burn = mod._compute_recommendation(True, p_norm, s_norm)
+    assert rec_pro_burn["tier"] == "use_it_or_lose_it", rec_pro_burn
+
+    _, s_abund = mod._classify_windows(
+        {"usedPercent": 20, "windowDurationMins": 10080, "resetsAt": now_ts + 5 * 86400},
+        None,
+    )
+    rec_pro_abund = mod._compute_recommendation(True, None, s_abund)
+    assert rec_pro_abund["tier"] == "abundant", rec_pro_abund
+    assert "no 5h window limit" in rec_pro_abund["guidance"]
+    assert "None" not in rec_pro_abund["guidance"]
+
+    _, s_mod = mod._classify_windows(
+        {"usedPercent": 70, "windowDurationMins": 10080, "resetsAt": now_ts + 30 * 3600},
+        None,
+    )
+    rec_pro_mod = mod._compute_recommendation(True, None, s_mod)
+    assert rec_pro_mod["tier"] == "moderate_surplus", rec_pro_mod
+    assert "None" not in rec_pro_mod["guidance"]
+
+    # tool_quota_status live path succeeds without fallback when credits.unlimited is True
+    orig_call_batch = mod.APP_SERVER.call_batch
+    try:
+        mod.APP_SERVER.call_batch = lambda reqs, timeout=15.0: [
+            {"result": {"account": {"type": "chatgpt", "planType": "pro"}}},
+            {"result": {"ordinaryUsageAllowed": True, "rateLimits": {"primary": None, "secondary": None, "credits": {"hasCredits": True, "unlimited": True}}}},
+        ]
+        q_unlim = mod.tool_quota_status({})
+        assert q_unlim["source"] == "codex-app-server-live"
+        assert q_unlim["recommendation"]["tier"] == "unlimited", q_unlim
+    finally:
+        mod.APP_SERVER.call_batch = orig_call_batch
 
     # 5. Session binding mismatch check on resume
     with mod.SESSIONS_LOCK:
@@ -597,7 +646,9 @@ def test_live_codex():
     q = mod.tool_quota_status({})
     assert q["source"] == "codex-app-server-live"
     assert q["recommendation"]["tier"] != "unknown"
-    print("LIVE QUOTA TIER:", q["recommendation"]["tier"], "5h rem:", q["primary5hWindow"]["remainingPercent"], "7d rem:", q["secondary7dWindow"]["remainingPercent"])
+    p_rem = (q.get("primary5hWindow") or {}).get("remainingPercent")
+    s_rem = (q.get("secondary7dWindow") or {}).get("remainingPercent")
+    print("LIVE QUOTA TIER:", q["recommendation"]["tier"], "5h rem:", p_rem, "7d rem:", s_rem)
 
     m = mod.tool_list_models({"include_hidden": True})
     assert m["source"] == "codex-app-server-live" and len(m["models"]) > 0

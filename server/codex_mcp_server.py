@@ -596,27 +596,36 @@ def _surplus_ratio(remaining_pct: float | None, mins_until_reset: float | None, 
     return round(float(remaining_pct) / time_rem_pct, 2)
 
 
+def _classify_windows(
+    raw_primary: dict[str, Any] | None,
+    raw_secondary: dict[str, Any] | None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Normalize rate-limit windows into (short_window_5h, long_window_7d) using windowDurationMins."""
+    w1 = _format_window(raw_primary)
+    w2 = _format_window(raw_secondary)
+    d1 = w1.get("windowDurationMins") if w1 else None
+    d2 = w2.get("windowDurationMins") if w2 else None
+    is_long_1 = isinstance(d1, (int, float)) and d1 >= 1440
+    is_short_2 = isinstance(d2, (int, float)) and d2 < 1440
+
+    if w1 is not None and w2 is None:
+        return (None, w1) if is_long_1 else (w1, None)
+    if w1 is None and w2 is not None:
+        return (w2, None) if is_short_2 else (None, w2)
+    if w1 is not None and w2 is not None and is_long_1 and is_short_2:
+        return (w2, w1)
+    return (w1, w2)
+
+
 def _compute_recommendation(
     ordinary_allowed: bool | None,
     primary: dict[str, Any] | None,
     secondary: dict[str, Any] | None,
+    *,
+    credits: dict[str, Any] | None = None,
+    account: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Recommend model, reasoning effort, and diverse task strategies based on quota & reset pacing."""
-    if primary is None and secondary is None:
-        return {
-            "tier": "unknown",
-            "strategy": "verify_quota_before_heavy_delegation",
-            "allowDelegation": None,
-            "recommendedModel": "gpt-6.2-sol",
-            "recommendedReasoningEffort": "low",
-            "suggestedUseCases": [
-                "Quota window data was unavailable; start with a small gpt-6.2-sol (low) check.",
-            ],
-            "avoidUseCases": ["Heavy xhigh/max audits until quota status is confirmed."],
-            "pacingMetrics": {"primary5hSurplusRatio": None, "secondary7dSurplusRatio": None},
-            "guidance": "Rate-limit windows were missing from the response. Proceed conservatively.",
-        }
-
     p_rem = primary.get("remainingPercent") if primary else None
     p_mins = primary.get("minutesUntilReset") if primary else None
     p_dur = primary.get("windowDurationMins") if primary else 300
@@ -647,6 +656,62 @@ def _compute_recommendation(
             "avoidUseCases": ["All codex_exec / codex_review calls"],
             "pacingMetrics": pacing,
             "guidance": "Codex quota is exhausted (<3% or blocked). Do not delegate until reset.",
+        }
+
+    if isinstance(credits, dict) and credits.get("unlimited") is True:
+        return {
+            "tier": "unlimited",
+            "strategy": "free_delegation",
+            "allowDelegation": True,
+            "recommendedModel": "gpt-6.2-astra",
+            "recommendedReasoningEffort": "high",
+            "alternativeModel": "gpt-6.2-sol",
+            "alternativeReasoningEffort": "medium",
+            "suggestedUseCases": [
+                "Deep architecture, security, and root-cause audits (gpt-6.2-astra, high/xhigh).",
+                "Pre-commit / pre-merge codex_review and parallel background subtasks.",
+            ],
+            "avoidUseCases": ["Trivial one-line questions that your main agent can answer directly."],
+            "pacingMetrics": pacing,
+            "guidance": (
+                "Account has unlimited Codex credits. Freely delegate complex verification "
+                "to gpt-6.2-astra (high) or parallel tasks to gpt-6.2-sol (medium/high)."
+            ),
+        }
+
+    if primary is None and secondary is None:
+        if isinstance(account, dict) and account.get("type") == "apiKey":
+            return {
+                "tier": "api_payg",
+                "strategy": "cost_aware_delegation",
+                "allowDelegation": True,
+                "recommendedModel": "gpt-6.2-sol",
+                "recommendedReasoningEffort": "medium",
+                "alternativeModel": "gpt-6.2-astra",
+                "alternativeReasoningEffort": "high",
+                "suggestedUseCases": [
+                    "Standard code reviews and bounded checks (gpt-6.2-sol, medium).",
+                    "Targeted gpt-6.2-astra (high) verification on complex or high-risk diffs.",
+                ],
+                "avoidUseCases": ["Unbounded whole-repo scans without file targets (pay-as-you-go billing)."],
+                "pacingMetrics": pacing,
+                "guidance": (
+                    "Account uses API-key pay-as-you-go billing with no rolling 5h/7d window limits. "
+                    "Default to gpt-6.2-sol (medium) and reserve gpt-6.2-astra (high) for critical paths."
+                ),
+            }
+        return {
+            "tier": "unknown",
+            "strategy": "verify_quota_before_heavy_delegation",
+            "allowDelegation": None,
+            "recommendedModel": "gpt-6.2-sol",
+            "recommendedReasoningEffort": "low",
+            "suggestedUseCases": [
+                "Quota window data was unavailable; start with a small gpt-6.2-sol (low) check.",
+            ],
+            "avoidUseCases": ["Heavy xhigh/max audits until quota status is confirmed."],
+            "pacingMetrics": {"primary5hSurplusRatio": None, "secondary7dSurplusRatio": None},
+            "guidance": "Rate-limit windows were missing from the response. Proceed conservatively.",
         }
 
     weekly_burn_opportunity = (
@@ -695,6 +760,12 @@ def _compute_recommendation(
     effective_rem = min([v for v in (p_rem, s_rem) if v is not None], default=100.0)
 
     if effective_rem >= 50:
+        if primary is not None and secondary is not None:
+            abundant_desc = "Both 5h and 7d quotas are abundant (>=50% remaining)."
+        elif secondary is not None:
+            abundant_desc = f"Weekly 7d quota is abundant ({s_rem}% remaining; no 5h window limit)."
+        else:
+            abundant_desc = f"5h quota is abundant ({p_rem}% remaining; no 7d window limit)."
         return {
             "tier": "abundant",
             "strategy": "free_delegation",
@@ -711,13 +782,21 @@ def _compute_recommendation(
             "avoidUseCases": ["Trivial one-line questions that Antigravity can answer directly."],
             "pacingMetrics": pacing,
             "guidance": (
-                "Both 5h and 7d quotas are abundant (>=50% remaining). "
+                f"{abundant_desc} "
                 "Freely use gpt-6.2-astra (high) for deep verification or gpt-6.2-sol (medium/high) for parallel subtasks."
             ),
         }
 
     if effective_rem >= 20:
         if (s_ratio is not None and s_ratio >= 1.2) or (p_mins is not None and p_mins <= 90 and (s_rem is None or s_rem >= 25)):
+            pacing_parts = []
+            if s_ratio is not None:
+                pacing_parts.append(f"7d surplus {s_ratio}x")
+            if p_mins is not None:
+                pacing_parts.append(f"5h resets in {p_mins}m")
+            elif s_mins is not None:
+                pacing_parts.append(f"7d resets in {round(s_mins / 60, 1)}h")
+            pacing_summary = ", ".join(pacing_parts) or "favorable pacing"
             return {
                 "tier": "moderate_surplus",
                 "strategy": "selective_deep_or_standard",
@@ -735,7 +814,7 @@ def _compute_recommendation(
                 "pacingMetrics": pacing,
                 "guidance": (
                     "Quota is moderate (20-49%), but time-to-reset pacing is favorable "
-                    f"(7d surplus {s_ratio}x, 5h resets in {p_mins}m). "
+                    f"({pacing_summary}). "
                     "Use gpt-6.2-sol (high) for focused reviews or gpt-6.2-astra (medium) on critical paths."
                 ),
             }
@@ -758,6 +837,7 @@ def _compute_recommendation(
         }
 
     if p_rem is not None and p_rem < 20 and p_mins is not None and p_mins <= 60 and (s_rem is None or s_rem >= 25):
+        s_note = f" while 7d quota is healthy ({s_rem}%)" if s_rem is not None else ""
         return {
             "tier": "conserve_5h_short_wait",
             "strategy": "defer_heavy_until_5h_reset",
@@ -771,7 +851,7 @@ def _compute_recommendation(
             "avoidUseCases": ["Heavy audits before the imminent 5h reset."],
             "pacingMetrics": pacing,
             "guidance": (
-                f"5h quota is low ({p_rem}%), but resets in {p_mins}m while 7d quota is healthy ({s_rem}%). "
+                f"5h quota is low ({p_rem}%), but resets in {p_mins}m{s_note}. "
                 "Do only tiny checks now and schedule heavy verification after the 5h reset."
             ),
         }
@@ -848,11 +928,13 @@ def tool_quota_status(args: dict[str, Any]) -> dict[str, Any]:
             raise RuntimeError("Missing rateLimits object in codex app-server response.")
 
         rl = rl_res["rateLimits"]
-        primary = _format_window(rl.get("primary"))
-        secondary = _format_window(rl.get("secondary"))
-        if primary is None and secondary is None:
-            raise RuntimeError("Both primary and secondary rate-limit windows are missing.")
+        primary, secondary = _classify_windows(rl.get("primary"), rl.get("secondary"))
+        credits = rl.get("credits")
         ordinary_allowed = rl_res.get("ordinaryUsageAllowed")
+        is_unlimited = isinstance(credits, dict) and credits.get("unlimited") is True
+        is_api_key = isinstance(acc, dict) and acc.get("type") == "apiKey"
+        if primary is None and secondary is None and not (is_unlimited or is_api_key or ordinary_allowed is False):
+            raise RuntimeError("Both primary and secondary rate-limit windows are missing.")
 
         return {
             "source": "codex-app-server-live",
@@ -860,17 +942,19 @@ def tool_quota_status(args: dict[str, Any]) -> dict[str, Any]:
             "ordinaryUsageAllowed": ordinary_allowed,
             "primary5hWindow": primary,
             "secondary7dWindow": secondary,
-            "credits": rl.get("credits"),
+            "credits": credits,
             "rateLimitResetCredits": rl_res.get("rateLimitResetCredits"),
             "rateLimitReachedType": rl.get("rateLimitReachedType"),
-            "recommendation": _compute_recommendation(ordinary_allowed, primary, secondary),
+            "recommendation": _compute_recommendation(
+                ordinary_allowed, primary, secondary, credits=credits, account=acc
+            ),
         }
     except Exception as exc:
         fallback = _fallback_session_rate_limits()
         if fallback:
             rl = fallback["rateLimits"]
-            primary = _format_window(rl.get("primary"))
-            secondary = _format_window(rl.get("secondary"))
+            primary, secondary = _classify_windows(rl.get("primary"), rl.get("secondary"))
+            credits = rl.get("credits")
             now_ts = time.time()
             warning = f"Live app-server query failed: {exc}"
             expired_windows = [
@@ -891,8 +975,8 @@ def tool_quota_status(args: dict[str, Any]) -> dict[str, Any]:
                 "warning": warning,
                 "primary5hWindow": primary,
                 "secondary7dWindow": secondary,
-                "credits": rl.get("credits"),
-                "recommendation": _compute_recommendation(None, primary, secondary),
+                "credits": credits,
+                "recommendation": _compute_recommendation(None, primary, secondary, credits=credits),
             }
         raise
 
