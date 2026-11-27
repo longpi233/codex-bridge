@@ -23,7 +23,7 @@ For runtime delegation instructions used in *other* workspaces, see `rules/AGENT
    - Antigravity namespaces plugin MCP servers as `<plugin_name>_<server_name>`, so `ServerName` is always `"codex-bridge_codex-bridge"`.
    - Antigravity enforces a hard **3-minute (180s)** per-call timeout on synchronous `call_mcp_tool`. Long operations must use `background: true` + `codex_job_status(wait_seconds=...)` (`30`–`45` for `low`/`medium`, `90`–`120` for `high`/`xhigh`/`max`; lower to `20`–`45` on hosts with 30–60s call ceilings).
 2. **MCP protocol & model defaults**:
-   - `initialize` negotiates `protocolVersion` across `SUPPORTED_PROTOCOL_VERSIONS` (`2024-11-05` through `2025-11-25`) and responds with empty `resources/list` and `prompts/list`.
+   - `initialize` negotiates `protocolVersion` across `SUPPORTED_PROTOCOL_VERSIONS` (`2024-11-05` through `2025-11-25`) and responds with empty `resources/list`, `resources/templates/list`, and `prompts/list`.
    - Never hardcode a specific model slug when `model` is omitted: honor `CODEX_DEFAULT_MODEL` if set, otherwise omit `-m` so Codex CLI uses the user's configured default.
 3. **Codex CLI flag placement**:
    - Parent flags (`-C <dir>`, `-s <sandbox>`, `--color never`, `-p <profile>`) **must precede** subcommands (`review`, `resume`).
@@ -40,7 +40,7 @@ For runtime delegation instructions used in *other* workspaces, see `rules/AGENT
    - Resuming a `session_id` validates bound `cwd` and refuses silently downgrading a `workspace-write` session to `read-only`.
 6. **Packaging & cross-host docs**:
    - Any new runtime file required by the MCP server or `codex-delegate` skill must be added to `scripts/pack_claude_plugin.py`'s whitelist, or packaged `.plugin` uploads will ship incomplete. `dist/` is gitignored — never reference a prebuilt artifact path as tracked.
-   - Never assume a single host's call-timeout or tool-name prefix in server `note` strings, `SKILL.md`, or `playbook.md`. State the host prerequisite inline for any `wait_seconds` recommendation > `45`, keep skill tool names bare (`codex_exec`, etc.), and note that prefixes follow the host's configured server key.
+   - Never assume a single host's call-timeout or tool-name prefix in server `note` strings, `_compute_recommendation()`, `SKILL.md`, or `playbook.md` (keep `_compute_recommendation()` free of `Antigravity`, `codex_worker`, or `invoke_subagent`). State the host prerequisite inline for any `wait_seconds` recommendation > `45`, keep skill tool names bare (`codex_exec`, etc.), and note that prefixes follow the host's configured server key.
 
 ## Verification & Reload Commands
 
@@ -82,6 +82,7 @@ Reload this MCP server after edits:
 | :--- | :--- |
 | **Antigravity** | `curl -sf -H "Content-Type: application/json" -H "x-codeium-csrf-token: ${ANTIGRAVITY_CSRF_TOKEN}" -d '{"serverName": "codex-bridge_codex-bridge"}' "http://${ANTIGRAVITY_LS_ADDRESS:-localhost:5387}/exa.language_server_pb.LanguageServerService/RefreshMcpServers"` |
 | **DSH** | Save `~/.dsh/profiles/<profile>/cordis.patch.yml` (Loader hot-reloads without restarting DSH; modifying the entry triggers unmount/remount). |
+| **WorkBuddy** | After editing `~/.workbuddy/mcp.json` or `.py` files, completely quit and restart WorkBuddy, then trust the custom connector; Python modules do not hot-reload. |
 | **Claude Code / Desktop / Cursor / Windsurf** | Restart or reconnect the MCP client after editing `.py` files (running MCP subprocesses do not hot-reload Python modules). |
 
 > **Host timeout behavior**: A host-side tool-call timeout (e.g., DSH's default `60000` ms) cuts only the client RPC wait — it does **not** terminate the MCP stdio server or the background Codex job, which can still be collected via `codex_job_status`.

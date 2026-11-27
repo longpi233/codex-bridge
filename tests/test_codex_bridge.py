@@ -522,11 +522,59 @@ time.sleep(10.0)
             if old_root is not None:
                 os.environ["CODEX_MANAGED_PACKAGE_ROOT"] = old_root
 
-    # 17. Usage non-zero detection and Codex binary resolution
+    # 17. Usage non-zero detection, host-agnostic recommendations, email masking, and optional JSONL logging
     assert mod._has_nonzero_usage(None) is False
     assert mod._has_nonzero_usage({}) is False
     assert mod._has_nonzero_usage({"input_tokens": 0, "output_tokens": 0}) is False
     assert mod._has_nonzero_usage({"input_tokens": 120, "output_tokens": 0}) is True
+
+    rec_samples = [
+        mod._compute_recommendation(False, None, None),
+        mod._compute_recommendation(True, None, None, credits={"unlimited": True}),
+        mod._compute_recommendation(True, None, None, account={"type": "apiKey"}),
+        mod._compute_recommendation(True, None, None),
+        mod._compute_recommendation(True, {"remainingPercent": 80, "minutesUntilReset": 30}, None),
+        mod._compute_recommendation(True, {"remainingPercent": 70, "minutesUntilReset": 200}, {"remainingPercent": 60, "minutesUntilReset": 4000}),
+        mod._compute_recommendation(True, {"remainingPercent": 40, "minutesUntilReset": 80}, {"remainingPercent": 40, "minutesUntilReset": 2000}),
+        mod._compute_recommendation(True, {"remainingPercent": 35, "minutesUntilReset": 240}, {"remainingPercent": 35, "minutesUntilReset": 8000}),
+        mod._compute_recommendation(True, {"remainingPercent": 10, "minutesUntilReset": 30}, {"remainingPercent": 50, "minutesUntilReset": 5000}),
+        mod._compute_recommendation(True, {"remainingPercent": 10, "minutesUntilReset": 240}, {"remainingPercent": 10, "minutesUntilReset": 5000}),
+    ]
+    assert len({r["tier"] for r in rec_samples}) == 10, [r["tier"] for r in rec_samples]
+    for rec in rec_samples:
+        dumped = json.dumps(rec, ensure_ascii=False)
+        for forbidden in ("Antigravity", "codex_worker", "invoke_subagent"):
+            assert forbidden not in dumped, (rec["tier"], forbidden, dumped)
+
+    old_inc_email = os.environ.pop("CODEX_BRIDGE_INCLUDE_EMAIL", None)
+    try:
+        masked = mod._mask_account({"type": "chatgpt", "email": "alice@example.com", "planType": "pro"})
+        assert masked["email"] == "a***@example.com" and masked["planType"] == "pro", masked
+        os.environ["CODEX_BRIDGE_INCLUDE_EMAIL"] = "1"
+        unmasked = mod._mask_account({"type": "chatgpt", "email": "alice@example.com"})
+        assert unmasked["email"] == "alice@example.com", unmasked
+    finally:
+        if old_inc_email is None:
+            os.environ.pop("CODEX_BRIDGE_INCLUDE_EMAIL", None)
+        else:
+            os.environ["CODEX_BRIDGE_INCLUDE_EMAIL"] = old_inc_email
+
+    with tempfile.TemporaryDirectory() as log_dir:
+        log_file = os.path.join(log_dir, "bridge.jsonl")
+        old_log_env = os.environ.pop("CODEX_BRIDGE_LOG_FILE", None)
+        try:
+            mod._log_event("disabled_check")
+            assert not os.path.exists(log_file)
+            os.environ["CODEX_BRIDGE_LOG_FILE"] = log_file
+            mod._log_event("enabled_check", ok=True)
+            with open(log_file, encoding="utf-8") as lf:
+                logged = [json.loads(line) for line in lf.read().splitlines() if line.strip()]
+            assert len(logged) == 1 and logged[0]["event"] == "enabled_check" and logged[0]["ok"] is True, logged
+        finally:
+            if old_log_env is None:
+                os.environ.pop("CODEX_BRIDGE_LOG_FILE", None)
+            else:
+                os.environ["CODEX_BRIDGE_LOG_FILE"] = old_log_env
 
     # 18. Codex binary resolution (native codex.exe on Windows when installed via npm)
     codex_bin, env = mod._resolve_codex_command()
@@ -749,8 +797,16 @@ print(json.dumps({"type": "thread.started", "thread_id": "fake-exec-1"}))
 
         send({"jsonrpc": "2.0", "id": 101, "method": "resources/list", "params": {}})
         assert wait_id(101)["result"] == {"resources": []}
+        send({"jsonrpc": "2.0", "id": 105, "method": "resources/templates/list", "params": {}})
+        assert wait_id(105)["result"] == {"resourceTemplates": []}
         send({"jsonrpc": "2.0", "id": 102, "method": "prompts/list", "params": {}})
         assert wait_id(102)["result"] == {"prompts": []}
+
+        send({"jsonrpc": "2.0", "id": 106, "method": "tools/call", "params": {"name": "codex_job_cancel", "arguments": {"job_id": "__probe_missing_job__"}}})
+        r_missing = wait_id(106, timeout=3.0)["result"]
+        assert r_missing["isError"] is True, r_missing
+        err_obj = json.loads(r_missing["content"][0]["text"])
+        assert err_obj["error"]["code"] == "ValueError" and "__probe_missing_job__" in err_obj["error"]["message"], err_obj
 
         send({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "codex_exec", "arguments": {"prompt": "slow", "background": True, "request_id": "req-1"}}})
         send({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "codex_exec", "arguments": {"prompt": "slow", "background": True, "request_id": "req-1"}}})

@@ -224,14 +224,23 @@ Claude Desktop 已通过本地 `.plugin` / `.zip` 插件上传兼容同一套 `.
 
 ### 4. Cursor、Windsurf、WorkBuddy 及其他 MCP 客户端（配置 MCP + 安装 Skill 与 Rule）
 
-> 同样**不要**直接复制包含 `${PLUGIN_ROOT}` 的 `mcp_config.json`，请填写 `server/codex_mcp_server.py` 的绝对路径（GUI 客户端如果与终端 `PATH` 不一致，建议直接填写 `python` 可执行文件的绝对路径）。
+> **配置文件归属对照（切勿混用模板）**：
+>
+> | 客户端 | 配置文件 / 路径 | 路径变量 | 默认 server key → 工具名前缀 |
+> | :--- | :--- | :--- | :--- |
+> | **Antigravity** | `mcp_config.json`（内置） | `${PLUGIN_ROOT}` | `codex-bridge_codex-bridge`（`call_mcp_tool`） |
+> | **Claude Code / Desktop 插件** | `.mcp.json`（内置） | `${CLAUDE_PLUGIN_ROOT}` | `codex-bridge` → `mcp__codex-bridge__<tool>` |
+> | **WorkBuddy / Cursor / Windsurf** | `~/.workbuddy/mcp.json`、`.workbuddy/mcp.json`、`~/.cursor/mcp.json` | 仅限绝对路径 | `codex_bridge` → `mcp__codex_bridge__<tool>` |
+> | **DSH（见第 5 节）** | `~/.dsh/profiles/<profile>/cordis.patch.yml` | 绝对路径（YAML） | `codex-bridge` → `mcp__codex-bridge__<tool>` |
+>
+> **严禁**把 `mcp_config.json`（含 `${PLUGIN_ROOT}`）或 `.mcp.json`（含 `${CLAUDE_PLUGIN_ROOT}`）复制到 Cursor、WorkBuddy 或 DSH。实际前缀以客户端工具列表显示为准。
 
 1. **克隆仓库**：
    ```bash
    git clone https://github.com/longpi233/codex-bridge.git /path/to/codex-bridge
    ```
 
-2. **在客户端的 MCP 配置文件中添加 `codex-bridge`**（例如 `~/.cursor/mcp.json`、`.cursor/mcp.json`、`~/.workbuddy/mcp.json` 或 Windsurf 的 `mcp_config.json`；**DSH** 请直接看下方**第 5 节**）：
+2. **在客户端的 MCP 配置文件中添加 `codex-bridge`**（例如 `~/.cursor/mcp.json`、`.cursor/mcp.json`、Windows 用户级 `%USERPROFILE%\.workbuddy\mcp.json` 或项目级 `<项目>\.workbuddy\mcp.json`，以及 Windsurf 的 `mcp_config.json`；**DSH** 请直接看下方**第 5 节**）：
 
    ```json
    {
@@ -247,13 +256,13 @@ Claude Desktop 已通过本地 `.plugin` / `.zip` 插件上传兼容同一套 `.
    }
    ```
    - **Python 绝对路径**：请将 `"/path/to/python"` 替换为本机实际解释器路径（例如 Windows 用正斜杠 `"C:/Python311/python.exe"`，macOS/Linux 用 `"/usr/local/bin/python3"`；裸 `"python"` 仅在 GUI 继承终端 `PATH` 时可用）。
-   - **针对短超时宿主（30–60s，如 WorkBuddy / DSH）**：若宿主支持，建议按对应配置方式调大单次工具调用超时（如 `mcp.json` 中的 `timeout`，或 DSH `cordis.patch.yml` 中的 `toolCallTimeoutMs`），否则请将 `codex_job_status` 的 `wait_seconds` 控制在 `20`–`45` 秒。另请注意：`jobId` 仅在当前服务端进程生命周期内有效，而 `sessionId`（`background: true` 默认持久化）由 Codex CLI 落盘保存，重启后仍可续接。
-   - **客户端工具名对照**：前缀由宿主配置中的 server key 决定：
-     - **Antigravity**：`ServerName: "codex-bridge_codex-bridge"`（通过 `call_mcp_tool` 调用）
-     - **Claude Code / DSH**（key 为 `codex-bridge`）：`mcp__codex-bridge__<tool>`
-     - **WorkBuddy / Cursor**（按上例用 `codex_bridge`）：`mcp__codex_bridge__<tool>`
+   - **针对短超时或未验证调用上限的宿主**：即便小改动同步 `codex_review` 实测也需 ~45 秒以上，因此在单次调用上限较短（30–60s）或尚未验证的宿主上（例如 WorkBuddy 中 `mcp.json` 的 `timeout` 仅控制连接启动超时而非单次工具调用上限），`codex_review` 及所有 `medium` 以上任务**必须**使用 `background: true`，且将 `codex_job_status` 的 `wait_seconds` 控制在 `20`–`45` 秒（除非宿主配置如 DSH 的 `toolCallTimeoutMs` 已确认调大）。另请注意：`jobId` 仅在当前服务端进程生命周期内有效，而 `sessionId`（`background: true` 默认持久化）由 Codex CLI 落盘保存，重启后仍可续接。
 
-3. **安装 `codex-delegate` Skill 与 Rule**（推荐）：
+3. **在 WorkBuddy 中激活与信任（看到工具的必要步骤）**：
+   - 写入 `%USERPROFILE%\.workbuddy\mcp.json`（或 `<项目>\.workbuddy\mcp.json`）后，**必须完全退出并重启 WorkBuddy**。
+   - 打开 **连接器管理 → 右上角自定义连接器**，对 `codex_bridge` 点击 **信任**，确认状态灯变绿后 6 个 `mcp__codex_bridge__*` 工具才会正式注入（修改 `.py` 后同样需要重启生效）。
+
+4. **安装 `codex-delegate` Skill 与 Rule**（推荐）：
    - **安装 Skill**：将 `skills/codex-delegate/` 复制或软链接到对应客户端的技能目录：
      - 通用跨 Agent 规范路径（Cursor / Pi / Codex 等）：`.agents/skills/codex-delegate` 或 `~/.agents/skills/codex-delegate`
      - Cursor / WorkBuddy 路径：`.cursor/skills/codex-delegate`、`~/.workbuddy/skills/codex-delegate` 或 `.codebuddy/skills/codex-delegate`
@@ -307,6 +316,8 @@ DSH **不使用** JSON 格式的 `mcp.json`，其 MCP 服务通过 Cordis 补丁
 | `CODEX_BIN` | 当 `codex` / `codex.exe` 未在 `PATH` 中自动识别时，显式指定其可执行文件路径。 |
 | `CODEX_HOME` | 自定义 Codex 状态与认证目录（默认为 `~/.codex`）。 |
 | `CODEX_DEFAULT_MODEL` | 当未传 `model` 且未设 `profile` 时的可选默认模型 ID（未配置则直接交由 Codex CLI 自身默认模型决定）。 |
+| `CODEX_BRIDGE_LOG_FILE` | 可选的结构化 JSONL 诊断日志文件路径（默认关闭，绝不写入 `stderr`）。 |
+| `CODEX_BRIDGE_INCLUDE_EMAIL` | 设为 `1` 时在 `codex_quota_status` 中返回未脱敏的 `account.email`（默认打码）。 |
 
 ## 运行测试
 
@@ -316,7 +327,7 @@ DSH **不使用** JSON 格式的 `mcp.json`，其 MCP 服务通过 Cordis 补丁
 python tests/test_codex_bridge.py
 ```
 
-运行包含真实 Codex CLI / `app-server` 的冒烟测试（使用 `gpt-6-luna` `low`，根据是否触发工具调用约消耗 2 万–11 万 input tokens；配额紧张时请跳过）：
+运行包含真实 Codex CLI / `app-server` 的冒烟测试（使用 `gpt-6-luna` `low`，根据是否触发工具调用实测基线约消耗 2.3 万–11 万 input tokens；配额紧张时请跳过）：
 
 ```bash
 python tests/test_codex_bridge.py --live
@@ -343,10 +354,14 @@ python tests/test_codex_bridge.py --live
     | python -u server/codex_mcp_server.py
   ```
 
-输出判读：
-- **返回 2 行 JSON**（`initialize` + 含 6 个工具的 `tools/list`；通知行不返回）→ 服务端正常，请检查客户端配置或 `python` 绝对路径。
-- **无输出或报错退出** → 检查 Python 版本（需 `3.10+`）或客户端启动日志。
-- **卡住无输出** → 检查启动参数是否漏掉了 `-u`（缺少 `-u` 会导致 stdout 块缓冲）。
+症状判读与处理建议：
+
+| 现象 | 根因判断与处理 |
+| :--- | :--- |
+| **stdio 自检正常返回 2 行 JSON**（含 6 个工具），**但客户端中仍看不到工具** | 服务端健康，卡在客户端激活。**WorkBuddy**：完全退出并重启后在“自定义连接器”中点击信任；**Claude Desktop**：从托盘/菜单栏完全退出重开。 |
+| **状态灯变红 / 启动失败** | 检查 JSON 语法、`python` 绝对路径（勿用裸 `"python"`）、`CODEX_BIN` / `CODEX_HOME`，或临时开启 `CODEX_BRIDGE_LOG_FILE` 排查请求日志。 |
+| **自检无输出或报 traceback** | 检查 Python 版本（需 `3.10+`）及客户端启动日志。 |
+| **自检卡住不退出也不输出** | 检查是否漏掉了 `-u` 参数（缺少 `-u` 会导致管道 stdout 块缓冲）。 |
 
 ## 目录结构
 

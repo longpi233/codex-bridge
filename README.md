@@ -224,14 +224,23 @@ Use this option if Claude Desktop's GUI process does not inherit `python` in `PA
 
 ### 4. Cursor, Windsurf, WorkBuddy & Other MCP Clients (MCP Server + Skill & Rule)
 
-> Again, do **not** copy `mcp_config.json` with `${PLUGIN_ROOT}`. Use an absolute path to `server/codex_mcp_server.py` (and for GUI apps whose `PATH` differs from your terminal, prefer the full path to `python`).
+> **Config File Ownership (do not copy the wrong template)**:
+>
+> | Client | Config Path | Path Variable | Default Server Key → Tool Prefix |
+> | :--- | :--- | :--- | :--- |
+> | **Antigravity** | `mcp_config.json` (built-in) | `${PLUGIN_ROOT}` | `codex-bridge_codex-bridge` (`call_mcp_tool`) |
+> | **Claude Code / Desktop Plugin** | `.mcp.json` (built-in) | `${CLAUDE_PLUGIN_ROOT}` | `codex-bridge` → `mcp__codex-bridge__<tool>` |
+> | **WorkBuddy / Cursor / Windsurf** | `~/.workbuddy/mcp.json`, `.workbuddy/mcp.json`, `~/.cursor/mcp.json` | Absolute paths only | `codex_bridge` → `mcp__codex_bridge__<tool>` |
+> | **DSH (Section 5)** | `~/.dsh/profiles/<profile>/cordis.patch.yml` | Absolute paths (YAML) | `codex-bridge` → `mcp__codex-bridge__<tool>` |
+>
+> **Never** copy `mcp_config.json` (`${PLUGIN_ROOT}`) or `.mcp.json` (`${CLAUDE_PLUGIN_ROOT}`) into Cursor, WorkBuddy, or DSH. Check your host's actual tool list if unsure of the active prefix.
 
 1. **Clone the repository**:
    ```bash
    git clone https://github.com/longpi233/codex-bridge.git /path/to/codex-bridge
    ```
 
-2. **Add `codex-bridge` to your client's MCP configuration** (e.g. `~/.cursor/mcp.json`, `.cursor/mcp.json`, `~/.workbuddy/mcp.json`, or Windsurf's `mcp_config.json`; for **DSH**, see **Section 5** below):
+2. **Add `codex-bridge` to your client's MCP configuration** (e.g. `~/.cursor/mcp.json`, `.cursor/mcp.json`, Windows `%USERPROFILE%\.workbuddy\mcp.json` or project `<project>\.workbuddy\mcp.json`, or Windsurf's `mcp_config.json`; for **DSH**, see **Section 5** below):
 
    ```json
    {
@@ -247,13 +256,13 @@ Use this option if Claude Desktop's GUI process does not inherit `python` in `PA
    }
    ```
    - **Absolute Python path**: Replace `"/path/to/python"` with your real interpreter path (e.g. `C:/Python311/python.exe` on Windows using forward slashes, or `/usr/local/bin/python3` on macOS/Linux; bare `"python"` only works if the GUI inherits your terminal `PATH`).
-   - **Hosts with short per-call timeouts (30–60s, e.g. WorkBuddy / DSH)**: Raise the host's tool-call timeout in its own config format if supported (e.g., `timeout` in `mcp.json`, or `toolCallTimeoutMs` in DSH `cordis.patch.yml`), or keep `wait_seconds` at `20`–`45` when polling `codex_job_status`. Note also that `jobId` is per-server-process, while `sessionId` (default for `background: true` jobs) is persisted to disk by Codex CLI and survives restarts.
-   - **Client tool naming**: Tool prefixes follow the host's configured server key:
-     - **Antigravity**: `ServerName: "codex-bridge_codex-bridge"` via `call_mcp_tool`
-     - **Claude Code / DSH** (`codex-bridge`): `mcp__codex-bridge__<tool>`
-     - **WorkBuddy / Cursor** (`codex_bridge`): `mcp__codex_bridge__<tool>`
+   - **Hosts with short or unknown per-call timeouts**: Even a small sync `codex_review` can take ~45s+, so on hosts with short (30–60s) or unverified per-call ceilings (e.g. WorkBuddy, where `mcp.json` `timeout` governs connection startup rather than per-call execution), **always** use `background: true` for `codex_review` and `medium`+ tasks and keep `codex_job_status` `wait_seconds` at `20`–`45` (unless raised in host config, such as DSH's verified `toolCallTimeoutMs`). Note also that `jobId` is per-server-process, while `sessionId` (default for `background: true` jobs) is persisted to disk by Codex CLI and survives restarts.
 
-3. **Install the `codex-delegate` Skill & Rule** (recommended):
+3. **Activate in WorkBuddy (required before tools appear)**:
+   - After writing `%USERPROFILE%\.workbuddy\mcp.json` (or `<project>\.workbuddy\mcp.json`), **completely quit and restart WorkBuddy**.
+   - Open **Connectors / Custom Connectors**, click **Trust** on `codex_bridge`, and confirm the status indicator turns green. Only after trusting will all 6 `mcp__codex_bridge__*` tools be injected. (Python edits also require a full restart/reconnect.)
+
+4. **Install the `codex-delegate` Skill & Rule** (recommended):
    - **Skill**: Copy or symlink `skills/codex-delegate/` into your agent's skill directory:
      - Standard cross-agent path (Cursor / Pi / Codex / etc.): `.agents/skills/codex-delegate` or `~/.agents/skills/codex-delegate`
      - Cursor / WorkBuddy paths: `.cursor/skills/codex-delegate`, `~/.workbuddy/skills/codex-delegate`, or `.codebuddy/skills/codex-delegate`
@@ -307,6 +316,8 @@ Once connected, try asking your main agent:
 | `CODEX_BIN` | Explicit path to the `codex` / `codex.exe` binary if not auto-detected from `PATH`. |
 | `CODEX_HOME` | Custom Codex state/auth directory (defaults to `~/.codex`). |
 | `CODEX_DEFAULT_MODEL` | Optional fallback model id when `model` and `profile` are omitted (if unset, Codex CLI uses its own configured default). |
+| `CODEX_BRIDGE_LOG_FILE` | Optional file path for structured JSONL request/job diagnostic logs (disabled by default; never writes to `stderr`). |
+| `CODEX_BRIDGE_INCLUDE_EMAIL` | Set to `1` to return unmasked `account.email` in `codex_quota_status` (masked by default). |
 
 ## Running Tests
 
@@ -316,7 +327,7 @@ Run the offline unit, concurrency, cancellation, and CLI-flag tests (consumes ze
 python tests/test_codex_bridge.py
 ```
 
-Include live Codex CLI / `app-server` smoke tests (consumes ~20k–110k input tokens on `gpt-6-luna` `low` depending on whether tool calls trigger; skip when quota is tight):
+Include live Codex CLI / `app-server` smoke tests (measured baseline ~23k–110k input tokens on `gpt-6-luna` `low` depending on whether tool calls trigger; skip when quota is tight):
 
 ```bash
 python tests/test_codex_bridge.py --live
@@ -343,10 +354,14 @@ If tools do not appear in your client, verify the MCP server directly over stdio
     | python -u server/codex_mcp_server.py
   ```
 
-How to read the output:
-- **Prints 2 JSON lines** (`initialize` + `tools/list` with all 6 tools; notifications produce no response) → the server is healthy; check your client config or absolute `python` path.
-- **No output / traceback** → check your Python environment (`3.10+`) or client startup logs.
-- **Hangs without printing** → ensure `-u` is passed to Python so pipe stdout is unbuffered.
+How to read the output & next steps:
+
+| Symptom | Diagnosis & Fix |
+| :--- | :--- |
+| **Stdio self-check prints 2 JSON lines** (`initialize` + `tools/list` with 6 tools), **yet tools are missing in client** | Server is healthy; issue is client activation. **WorkBuddy**: completely quit, restart, and click **Trust** in Custom Connectors. **Claude Desktop**: completely quit from tray/menu bar and relaunch. |
+| **Client shows red status light / startup failure** | Check JSON syntax, absolute `python` path (avoid bare `"python"`), `CODEX_BIN` / `CODEX_HOME`, or temporarily set `CODEX_BRIDGE_LOG_FILE` to inspect incoming requests. |
+| **Self-check returns no output or traceback** | Verify Python `3.10+` and dependencies in `PATH`, and check client startup logs. |
+| **Self-check hangs without printing** | Ensure `-u` is passed to Python so pipe `stdout` is unbuffered. |
 
 ## Directory Structure
 

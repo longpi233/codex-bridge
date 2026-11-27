@@ -57,6 +57,7 @@ VALID_REASONING_EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")
 VALID_SANDBOXES = ("read-only", "workspace-write", "danger-full-access")
 
 SEND_LOCK = threading.Lock()
+LOG_LOCK = threading.Lock()
 CANCEL_LOCK = threading.Lock()
 CANCEL_EVENTS: dict[Any, threading.Event] = {}
 
@@ -78,6 +79,45 @@ def _configure_stdio() -> None:
                 stream.reconfigure(encoding="utf-8", errors="replace")
             except Exception:
                 pass
+
+
+def _log_event(event: str, **fields: Any) -> None:
+    """Append a structured JSONL diagnostic entry to CODEX_BRIDGE_LOG_FILE if enabled."""
+    log_path = os.environ.get("CODEX_BRIDGE_LOG_FILE", "").strip()
+    if not log_path:
+        return
+    record = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "event": event,
+        **fields,
+    }
+    try:
+        line = json.dumps(record, ensure_ascii=False, default=str) + "\n"
+        parent = os.path.dirname(os.path.abspath(log_path))
+        with LOG_LOCK:
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(line)
+    except Exception:
+        pass
+
+
+def _mask_account(acc: Any) -> Any:
+    """Mask account.email by default unless CODEX_BRIDGE_INCLUDE_EMAIL=1."""
+    if not isinstance(acc, dict) or os.environ.get("CODEX_BRIDGE_INCLUDE_EMAIL") == "1":
+        return acc
+    email = acc.get("email")
+    if not isinstance(email, str) or not email.strip():
+        return acc
+    masked_acc = dict(acc)
+    cleaned = email.strip()
+    if "@" in cleaned:
+        local, domain = cleaned.split("@", 1)
+        masked_acc["email"] = f"{local[0]}***@{domain}" if local else f"***@{domain}"
+    else:
+        masked_acc["email"] = "***"
+    return masked_acc
 
 
 def _decode_bytes(raw: bytes) -> str:
@@ -719,7 +759,7 @@ def _compute_recommendation(
             "recommendedModel": None,
             "recommendedReasoningEffort": None,
             "suggestedUseCases": [
-                "Handle verification locally in Antigravity until the blocking window resets.",
+                "Handle verification locally in your main agent until the blocking window resets.",
                 "Optionally consume a RateLimitResetCredit in Codex if urgent.",
             ],
             "avoidUseCases": ["All codex_exec / codex_review calls"],
@@ -813,7 +853,7 @@ def _compute_recommendation(
             "alternativeReasoningEffort": "high",
             "suggestedUseCases": [
                 "Deep module/repo architectural & security audits (gpt-6.2-astra, xhigh, background: true).",
-                "Parallel codex_worker subagents or background batches across modules.",
+                "Parallel background jobs across modules.",
                 "Thorough edge-case hunting, refactoring proposals, and test-suite generation.",
                 "Cross-model second opinions on every non-trivial change before reset.",
             ],
@@ -846,9 +886,9 @@ def _compute_recommendation(
             "suggestedUseCases": [
                 "Complex bug root-cause analysis and design verification (gpt-6.2-astra, high).",
                 "Pre-commit / pre-merge codex_review on feature diffs.",
-                "Bounded implementation subtasks via codex_worker (gpt-6.2-sol, medium/high).",
+                "Bounded implementation subtasks via background codex_exec (gpt-6.2-sol, medium/high).",
             ],
-            "avoidUseCases": ["Trivial one-line questions that Antigravity can answer directly."],
+            "avoidUseCases": ["Trivial one-line questions that your main agent can answer directly."],
             "pacingMetrics": pacing,
             "guidance": (
                 f"{abundant_desc} "
@@ -1007,7 +1047,7 @@ def tool_quota_status(args: dict[str, Any]) -> dict[str, Any]:
 
         return {
             "source": "codex-app-server-live",
-            "account": acc,
+            "account": _mask_account(acc),
             "ordinaryUsageAllowed": ordinary_allowed,
             "primary5hWindow": primary,
             "secondary7dWindow": secondary,
@@ -1520,6 +1560,7 @@ def _launch_background_job(
         JOBS[job_id] = job_record
         if request_id:
             REQUEST_ID_TO_JOB[request_id] = job_id
+        _log_event("job_queued", jobId=job_id, kind=kind, sessionId=session_id)
 
     def _worker() -> None:
         acquired = False
@@ -1640,6 +1681,8 @@ def _serialize_job(job: dict[str, Any], include_result: bool = True) -> dict[str
         out["idleSeconds"] = round(max(0.0, now - last_act), 1)
         if job["lastMessagePreview"]:
             out["lastMessagePreview"] = job["lastMessagePreview"]
+    if job["status"] in ("failed", "timed_out"):
+        out["failed"] = True
     if job["error"]:
         out["error"] = job["error"]
     if include_result and job["result"] is not None:
@@ -2354,6 +2397,10 @@ def _handle_request(msg: dict[str, Any], cancel_event: threading.Event) -> None:
             _send({"jsonrpc": "2.0", "id": msg_id, "result": {"resources": []}})
             return
 
+        if method == "resources/templates/list":
+            _send({"jsonrpc": "2.0", "id": msg_id, "result": {"resourceTemplates": []}})
+            return
+
         if method == "prompts/list":
             _send({"jsonrpc": "2.0", "id": msg_id, "result": {"prompts": []}})
             return
@@ -2366,8 +2413,15 @@ def _handle_request(msg: dict[str, Any], cancel_event: threading.Event) -> None:
             if not isinstance(name, str):
                 _send({"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32602, "message": "Tool name must be a string"}})
                 return
+            t0 = time.monotonic()
             try:
                 data, is_err = _dispatch_tool(name, args, cancel_event)
+                _log_event(
+                    "tool_call",
+                    tool=name,
+                    durationMs=round((time.monotonic() - t0) * 1000, 1),
+                    isError=is_err,
+                )
                 _send({
                     "jsonrpc": "2.0",
                     "id": msg_id,
@@ -2377,14 +2431,29 @@ def _handle_request(msg: dict[str, Any], cancel_event: threading.Event) -> None:
                     },
                 })
             except KeyError:
+                _log_event(
+                    "tool_call",
+                    tool=name,
+                    durationMs=round((time.monotonic() - t0) * 1000, 1),
+                    isError=True,
+                    errorType="UnknownTool",
+                )
                 _send({"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32601, "message": f"Unknown tool: {name}"}})
             except Exception as exc:
+                _log_event(
+                    "tool_call",
+                    tool=name,
+                    durationMs=round((time.monotonic() - t0) * 1000, 1),
+                    isError=True,
+                    errorType=type(exc).__name__,
+                )
+                err_payload = {"error": {"code": type(exc).__name__, "message": str(exc)}}
                 _send({
                     "jsonrpc": "2.0",
                     "id": msg_id,
                     "result": {
                         "isError": True,
-                        "content": [{"type": "text", "text": f"Error: {exc}"}],
+                        "content": [{"type": "text", "text": json.dumps(err_payload, ensure_ascii=False, indent=2)}],
                     },
                 })
             return

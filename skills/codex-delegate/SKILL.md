@@ -34,6 +34,7 @@ Before dispatching a non-trivial Codex task, call `codex_quota_status`:
 | `unknown` | Live rate-limit windows unavailable | `gpt-6.2-sol` (`low`) | Proceed conservatively with small checks until quota status is confirmed. |
 
 If you are unsure which model slugs are currently enabled on the user's account, call `codex_list_models`.
+When reporting quota status to the user, share only `tier`, remaining percentages, and reset times—do not echo personal account identifiers.
 
 ## 2. Choose the Right Tool
 
@@ -47,14 +48,14 @@ If you are unsure which model slugs are currently enabled on the user's account,
    - Optional **`profile`** (`-p`) reuses a named config profile in `$CODEX_HOME`, and **`images`** (`-i`) attaches local screenshots/images for multimodal visual verification.
    - **Multi-turn context continuity (`session_id`)**: Sync calls default to `ephemeral: true`, while `background: true` calls default to `ephemeral: false` (`resumable: true`) so long or interrupted jobs can always be resumed. Pass `ephemeral: false` on sync calls if you also want follow-up turns, then pass `session_id: "<sessionId>"` to resume with full prior context and prompt caching (call `codex_job_status` with `{}` to inspect tracked `activeSessions`).
 3. **Smart Polling, Flexible Timeouts & Self-Directed Pause**:
-   - **Default to `background: true` for file-reading or review tasks**: Whenever Codex inspects workspace files, runs reviews, or uses `medium`+ reasoning, pass `background: true` (plus optional `request_id`) to stay below MCP host deadlines (e.g., Antigravity's 180s limit).
+   - **Require `background: true` on short-timeout hosts & for file-reading or review tasks**: Even a small single-commit `codex_review` can take ~45s+ synchronously, so on hosts with short (30–60s) or unknown per-call deadlines, `codex_review` and any `medium`+ task **must** use `background: true` (plus optional `request_id`).
    - **Batch-wait & match `wait_seconds` to effort and host timeout** (to avoid wasteful 20+ poll loops):
-     - For `low`/`medium`: use `wait_seconds: 30`–`45`.
+     - For `low`/`medium`: use `wait_seconds: 30`–`45` (or `20`–`45` on 30–60s hosts).
      - For `high`/`xhigh`/`max`/`ultra` (especially `gpt-6.2-astra`): use **`wait_seconds: 90`–`120`** on hosts with 180s+ timeouts (like Antigravity), or **`20`–`45`** on hosts with 30–60s call limits (unless raised in host config). `codex_job_status` wakes early as soon as jobs finish.
      - When **2 or more background jobs** are running, **do NOT alternate single-`job_id` polls**. Omit `job_id` and call `codex_job_status(wait_seconds=..., include_results=true)` to wait on all active jobs in one call. Keep polling turns brief without repeating partial previews.
    - **Flexible `timeout_seconds` & self-directed pause-and-harvest**:
      - Omit `timeout_seconds` for normal tasks (defaults: `900s` for `low`/`medium`, `1800s` for `high`+, up to `3600s`; pass `0` for no hard wall-clock limit when you want to manage completion yourself). Never pass small values like `30`–`120`.
-     - Watch `elapsedSeconds`, `idleSeconds`, and `toolCallsCount` in `codex_job_status`. If a job is taking longer than needed or stalled, call `codex_job_cancel(job_id=...)` yourself: the server returns all captured `agentMessages` and recent `activityLog` directly (no log-file hunting needed), and since `background: true` jobs are resumable by default, you can immediately call `codex_exec(session_id=..., reasoning_effort="low", prompt="Do not run any new tools or searches; output all verified findings so far.")` to harvest a complete structured report.
+     - Watch `elapsedSeconds`, `idleSeconds`, `agentMessagesCount`, and `toolCallsCount` in `codex_job_status`. If a job has made progress (`agentMessagesCount > 0` or `toolCallsCount > 0`) and is stalling or taking too long, call `codex_job_cancel(job_id=...)` yourself: the server returns all captured `agentMessages` and recent `activityLog` directly (no log-file hunting needed), and since `background: true` jobs are resumable by default, you can immediately call `codex_exec(session_id=..., reasoning_effort="low", prompt="Do not run any new tools or searches; output all verified findings so far.")` to harvest a complete structured report. Note: canceling immediately after launch while counts are still `0` leaves nothing to harvest.
    - **Antigravity-only (`codex_worker` subagent)**: For heavy `gpt-6.2-astra` or multi-job workflows in Antigravity, prefer invoking `codex_worker` via `invoke_subagent` so polling stays out of the main conversation context.
 
 ## 3. Verification & Performance Best Practices

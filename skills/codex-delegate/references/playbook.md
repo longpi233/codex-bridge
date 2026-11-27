@@ -65,7 +65,7 @@ Tool: `codex_exec`
      }
      ```
 
-3. Self-directed pause & harvest (if a job runs too long or `idleSeconds` climbs):
+3. Self-directed pause & harvest (wait until `agentMessagesCount > 0` or `toolCallsCount > 0` so there is partial work to harvest; canceling immediately after queuing at `0.0s` yields nothing):
    - Cancel cleanly: `codex_job_cancel({"job_id": "<jobId>"})` — inspect `agentMessages` & `activityLog` in the returned payload (no log-file hunting needed).
    - Harvest a structured wrap-up via `session_id`:
      ```json
@@ -88,6 +88,8 @@ Reuse the Codex thread so Codex keeps prior context and achieves high prompt-cac
 2. **Turn 2+**: Pass `"session_id": "<sessionId>"` (and the same `cwd` / `sandbox`). Avoid changing a `workspace-write` session to `read-only` on resume (rejected by server). Call `codex_job_status` with `{}` to list tracked `activeSessions` if you need to recover a `sessionId`.
 
 ## 5. Pattern D: Git Diff Review (`codex_review`)
+
+Use `background: true` on `codex_review` (even a small single-commit sync review takes ~45s+, exceeding short-timeout host limits):
 
 - **Uncommitted changes**: `{"cwd": "<repo>", "model": "gpt-6.2-sol", "reasoning_effort": "medium", "uncommitted": true, "background": true}`
 - **Branch diff**: `{"cwd": "<repo>", "base": "main", "background": true}`
