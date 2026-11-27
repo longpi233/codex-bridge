@@ -10,6 +10,9 @@
   "repository": "https://github.com/longpi233/codex-bridge",
   "license": "MIT",
   "icon": "./assets/logo.png",
+  "agents": [
+    "./claude/agents/codex-worker.md"
+  ],
   "keywords": [
     "mcp",
     "codex",

@@ -5,8 +5,8 @@ Runtime delegation rules for *other* workspaces live in `rules/AGENTS.md` and `s
 
 ## Repository Layout
 
-- `assets/logo.png` — Project logo shared by READMEs and all native plugin manifests (`plugin.json`, `.claude-plugin/plugin.json`, `package.json`).
-- `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, `.mcp.json` — **Claude Code / Desktop** plugin manifests using `${CLAUDE_PLUGIN_ROOT}` (`codex-bridge` v`0.2.1`).
+- `assets/logo.png` — Transparent `512×512` PNG project logo (`< 256 KiB` for DSH compatibility) shared by READMEs and all native plugin manifests (`plugin.json`, `.claude-plugin/plugin.json`, `package.json`).
+- `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, `.mcp.json`, `claude/agents/codex-worker.md` — **Claude Code / Desktop** plugin manifests (`${CLAUDE_PLUGIN_ROOT}`, `codex-bridge` v`0.2.1`) and native Claude subagent (replaces auto-scanning Antigravity's `agents/`).
 - `package.json`, `cordis.patch.yml`, `locale/en.json`, `locale/zh.json` — **DSH-exclusive** native Cordis plugin bundle (`name: "codex-bridge"`, synced to v`0.2.1`), resolving Python and `server/codex_mcp_server.py` dynamically via `!!js` with duplicate `serverName` auto-guard.
 - `plugin.json` & `mcp_config.json` — **Antigravity-exclusive** plugin manifest (`v0.2.1`) and MCP config (`${PLUGIN_ROOT}`). Do not add unsupported top-level fields.
 - `server/codex_mcp_server.py` — Zero-dependency Python 3.10+ MCP stdio server exposing `codex_quota_status`, `codex_list_models`, `codex_exec`, `codex_review`, `codex_job_status`, and `codex_job_cancel`.
@@ -37,7 +37,7 @@ Runtime delegation rules for *other* workspaces live in `rules/AGENTS.md` and `s
    - Missing `rateLimits` windows must return `tier: "unknown"`; upstream absent/all-zero usage omits `usage` and sets `usageUnavailable: true`; `account.email` is masked unless `CODEX_BRIDGE_INCLUDE_EMAIL=1`.
    - `SESSION_LOCK_REFS` pins background session locks before worker thread creation so `_prune_sessions_unlocked()` cannot evict active/queued locks; resuming validates `cwd` and blocks downgrading `workspace-write` to `read-only`.
 6. **Packaging, versions & cross-host docs**:
-   - Keep version numbers and `assets/logo.png` in sync across `server/codex_mcp_server.py`, `plugin.json`, `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, `package.json`, and `scripts/pack_claude_plugin.py` (`dist/` is gitignored).
+   - Keep version numbers and `assets/logo.png` (`512–2048 px` square PNG, **strictly `< 256 KiB`** for DSH) in sync across `server/codex_mcp_server.py`, `plugin.json`, `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, `package.json`, and `scripts/pack_claude_plugin.py` (`dist/` is gitignored).
    - Keep `_compute_recommendation()`, server `note` strings, `SKILL.md`, and `playbook.md` free of single-host assumptions: keep skill tool names bare, inline host prerequisites for any `wait_seconds > 45`, and never reference `Antigravity` / `codex_worker` / `invoke_subagent` inside `_compute_recommendation()`.
 
 ## Verification & Reload Commands

@@ -117,7 +117,7 @@ Jump to your client (ordered from dedicated native plugins to generic MCP config
   ```
   *(Pass `-s user` before `codex-bridge` for global registration. To also add the skill/rule manually, see [§4 Generic MCP Clients](#4-generic-mcp-clients) with `~/.claude/skills/codex-delegate` and `~/.claude/CLAUDE.md`.)*
 
-> **Note for Marketplace / `--plugin-dir` users**: `agents/codex_worker.md` uses Antigravity-specific frontmatter, so in Claude Code / Claude Desktop simply invoke `codex-bridge` tools from the main agent with `codex-delegate` rather than invoking `codex_worker`.
+> **Included components**: Both `.plugin` uploads and GitHub Marketplace / `--plugin-dir` installs load all 6 MCP tools, the `codex-delegate` skill, and the native `codex-worker` subagent (`claude/agents/codex-worker.md`, keeping Antigravity's `agents/codex_worker.md` isolated).
 
 ---
 
@@ -287,6 +287,7 @@ codex-bridge/
 ├── locale/                            # DSH localized metadata (en.json, zh.json)
 ├── server/codex_mcp_server.py         # Cross-platform MCP stdio server (zero dependencies)
 ├── skills/codex-delegate/             # Cross-agent delegation workflow & playbook
+├── claude/agents/codex-worker.md      # Claude Code / Desktop subagent definition
 ├── agents/codex_worker.md             # Antigravity subagent definition
 ├── rules/AGENTS.md                    # Concise always-on delegation rule
 ├── scripts/pack_claude_plugin.py      # Builds dist/codex-bridge.plugin for Claude Desktop

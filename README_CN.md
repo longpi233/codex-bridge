@@ -117,7 +117,7 @@
   ```
   *（在 `codex-bridge` 前加 `-s user` 可全局注册；Skill 与 Rule 手动安装请参考 [第 4 节](#4-通用-mcp-客户端)，对应路径为 `~/.claude/skills/codex-delegate` 与 `~/.claude/CLAUDE.md`。）*
 
-> **提示**：通过 GitHub 市场或 `--plugin-dir` 安装时会一并扫入 `agents/codex_worker.md`（使用 Antigravity 专属 frontmatter），在 Claude Code / Claude Desktop 中请直接由主 Agent 搭配 `codex-delegate` 调用工具，不要调用 `codex_worker`。
+> **内置组件说明**：无论是上传 `.plugin` 插件包，还是通过 GitHub 市场 / `--plugin-dir` 安装，都会一并启用全部 6 个 MCP 工具、`codex-delegate` 技能以及 Claude 原生的 `codex-worker` 子代理（`claude/agents/codex-worker.md`，与 Antigravity 专用的 `agents/codex_worker.md` 互不冲突）。
 
 ---
 
@@ -287,6 +287,7 @@ codex-bridge/
 ├── locale/                            # DSH 本地化元数据（en.json, zh.json）
 ├── server/codex_mcp_server.py         # 跨平台、零依赖的 MCP stdio 服务端
 ├── skills/codex-delegate/             # 跨 Agent 委派工作流与调用手册
+├── claude/agents/codex-worker.md      # Claude Code / Desktop 原生子代理定义
 ├── agents/codex_worker.md             # Antigravity 专属子代理定义
 ├── rules/AGENTS.md                    # 精简的常驻委派规则
 ├── scripts/pack_claude_plugin.py      # 打包 Claude Desktop 专用 dist/codex-bridge.plugin
