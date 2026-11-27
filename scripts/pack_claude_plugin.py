@@ -15,7 +15,6 @@ PLUGIN_FILES: tuple[str, ...] = (
     ".claude-plugin/plugin.json",
     ".claude-plugin/icon.png",
     ".mcp.json",
-    "assets/logo.png",
     "assets/logo-96.png",
     "claude/agents/codex-worker.md",
     "server/codex_mcp_server.py",
@@ -32,6 +31,8 @@ def build_plugin_archive(output_path: Path) -> Path:
         raise FileNotFoundError(f"Missing required plugin file(s): {', '.join(missing)}")
 
     resolved_out = (output_path if output_path.is_absolute() else (REPO_ROOT / output_path)).resolve()
+    if resolved_out.suffix.lower() not in (".plugin", ".zip"):
+        raise ValueError(f"Output path must end with .plugin or .zip: {resolved_out}")
     source_paths = {(REPO_ROOT / rel).resolve() for rel in PLUGIN_FILES}
     if resolved_out in source_paths or (
         resolved_out.exists() and any(os.path.samefile(resolved_out, src) for src in source_paths)
@@ -39,9 +40,18 @@ def build_plugin_archive(output_path: Path) -> Path:
         raise ValueError(f"Refusing to overwrite whitelisted plugin source file: {resolved_out}")
     resolved_out.parent.mkdir(parents=True, exist_ok=True)
 
-    with zipfile.ZipFile(resolved_out, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for rel in PLUGIN_FILES:
-            zf.write(REPO_ROOT / rel, arcname=rel)
+    tmp_out = resolved_out.with_name(f".{resolved_out.name}.tmp-{os.getpid()}")
+    try:
+        with zipfile.ZipFile(tmp_out, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for rel in PLUGIN_FILES:
+                zf.write(REPO_ROOT / rel, arcname=rel)
+        os.replace(tmp_out, resolved_out)
+    except Exception:
+        try:
+            tmp_out.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
     return resolved_out
 

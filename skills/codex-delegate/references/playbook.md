@@ -2,7 +2,7 @@
 
 Quick reference of concrete MCP tool call arguments for `codex-bridge`.
 
-> **Tool-naming note**: Examples below use bare tool names (`codex_exec`, etc.). Clients may expose prefixed names derived from the host's configured server key (e.g., `mcp__codex-bridge__<tool>` in Claude Code/DSH or `mcp__codex_bridge__<tool>` in WorkBuddy). In Antigravity, wrap arguments in `call_mcp_tool` with `"ServerName": "codex-bridge_codex-bridge"` and `"ToolName": "<tool>"`.
+> **Tool-naming note**: Examples below use bare tool names (`codex_exec`, etc.). Clients may expose prefixed names based on how the server is registered (e.g., `mcp__plugin_codex-bridge_codex-bridge__<tool>` for a native Claude plugin, `mcp__codex-bridge__<tool>` for direct DSH/`claude mcp add` registration, or `mcp__codex_bridge__<tool>` in WorkBuddy). In Antigravity, wrap arguments in `call_mcp_tool` with `"ServerName": "codex-bridge_codex-bridge"` and `"ToolName": "<tool>"`.
 
 ## 1. Sync Quota First
 
@@ -33,7 +33,7 @@ Tool: `codex_exec`
 
 Use `background: true` whenever Codex reads workspace files, runs shell commands, or uses `medium`/`high`/`xhigh`/`max`/`ultra` reasoning to stay safely below MCP host deadlines (e.g. Antigravity's 3-minute limit). Omit `timeout_seconds` (defaults to `900s` for `low`/`medium`, `1800s` for `high`+), or pass `0` for no hard limit when managing duration yourself.
 
-1. Launch 1 or more parallel batches immediately (use `request_id` to make retries idempotent; `background: true` jobs default to `ephemeral: false` so they are always resumable):
+1. Launch 1 or more parallel batches immediately (generate a fresh, unique `request_id` per logical task and reuse it **only** when retrying that exact request; `background: true` `codex_exec` jobs default to `ephemeral: false` so they are resumable):
 
 Tool: `codex_exec`
 
@@ -45,19 +45,19 @@ Tool: `codex_exec`
   "cwd": "/path/to/repo",
   "sandbox": "read-only",
   "background": true,
-  "request_id": "audit-batch-1-v1"
+  "request_id": "<unique-task-id>"
 }
 ```
 
-2. Poll efficiently (`wait_seconds: 90`–`120` for `high`/`xhigh`/`max`/`gpt-6.2-astra` on 180s+ hosts; `20`–`45` for `low`/`medium` or on 30–60s hosts):
-   - **Single job** (`120` below assumes a 180s+ host; use `20`–`45` on 30–60s hosts):
+2. Poll efficiently (`~20` on 30s hosts, `30`–`45` on 60s hosts or `low`/`medium`, `90`–`120` for `high`/`xhigh`/`max`/`gpt-6.2-astra` on 180s+ hosts):
+   - **Single job** (`120` below assumes a 180s+ host; use `~20` on 30s hosts or `30`–`45` on 60s hosts):
      ```json
      {
        "job_id": "<jobId>",
        "wait_seconds": 120
      }
      ```
-   - **Multiple jobs (2+)**: **Omit `job_id`** to wait on all active jobs in a single call instead of alternating polls (`120` assumes a 180s+ host; use `20`–`45` on 30–60s hosts):
+   - **Multiple jobs (2+)**: **Omit `job_id`** to wait on all active jobs in a single call instead of alternating polls (`120` assumes a 180s+ host; use `~20` on 30s hosts or `30`–`45` on 60s hosts):
      ```json
      {
        "wait_seconds": 120,
@@ -66,8 +66,8 @@ Tool: `codex_exec`
      ```
 
 3. Self-directed pause & harvest (wait until `agentMessagesCount > 0` or `toolCallsCount > 0` so there is partial work to harvest; canceling immediately after queuing at `0.0s` yields nothing):
-   - Cancel cleanly: `codex_job_cancel({"job_id": "<jobId>"})` — inspect `agentMessages` & `activityLog` in the returned payload (no log-file hunting needed).
-   - Harvest a structured wrap-up via `session_id`:
+   - Cancel cleanly: `codex_job_cancel({"job_id": "<jobId>"})` (poll `codex_job_status` if it returns `cancelling`) — inspect `result.agentMessages` & `result.activityLog` in the returned payload (no log-file hunting needed).
+   - For **resumable `codex_exec` jobs** (`resumable: true` with a `sessionId`; note `codex_review` runs `--ephemeral`), harvest a structured wrap-up via `session_id`:
      ```json
      {
        "session_id": "<sessionId>",

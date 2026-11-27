@@ -36,8 +36,8 @@
 
 ## 核心特性
 
-- **配额与重置时间感知**：实时读取你的 5 小时与 7 天 Codex 配额及重置时间，帮主力 Agent 自动判断什么时候放心上 `gpt-6.2-astra`，什么时候省着用。
-- **深度审计不超时**：长时间的代码审查与大 Diff 分析自动走后台异步执行，无需干等或担心客户端超时中断。
+- **配额与重置时间感知**：主力 Agent 在委派前可通过 `codex_quota_status` 实时读取 5 小时与 7 天 Codex 配额及重置时间，按建议判断何时放心上 `gpt-6.2-astra`，何时省着用。
+- **深度审计不超时**：支持通过 `background: true` 后台异步执行长时间代码审计与大 Diff 审查，并在完成后用 `codex_job_status` 收取结果，避免客户端等待超时。
 - **多轮上下文续接**：保留 Codex 会话上下文，方便“审查 → 修改 → 复验”连续推进，不必每轮从头讲起。
 - **多模态传图与配置复用**：支持直接把本地截图喂给 GPT 分析（`images`），也可直接复用 `~/.codex` 中的配置档（`profile`）。
 - **零依赖全平台可用**：纯 Python 3.10+ 标准库实现，Windows、macOS 与 Linux 开箱即用。
@@ -111,12 +111,12 @@
 
 ### 2. Claude Code 与 Claude Desktop
 
-安装后自动启用全部 6 个 MCP 工具、`codex-delegate` 技能以及 Claude 原生的 `codex-worker` 子代理。
+插件安装后提供全部 6 个 MCP 工具、`codex-delegate` 技能以及 Claude 原生的 `codex-worker` 子代理 *（在 Claude Desktop 中，插件自带的 MCP 服务与子代理用于 **Cowork** 和 **Claude Code**；若使用常规 Desktop **Chat** 标签页，请使用下方 [手动配置](#手动配置desktop-chat-标签页自定义-python-路径或环境变量)）*。
 
 #### 方式 A：通过 GitHub 市场在线同步（推荐，便于后续同步更新）
 
-- **Claude Desktop**：
-  1. 打开 **Customize（自定义）** → **Plugins（插件）** → **Discover** → 点击 **`+`** *（鼠标悬停在 `+` 上会显示 **Add marketplace**）*。
+- **Claude Desktop（Cowork）**：
+  1. 打开 **Customize（自定义）** → **Plugins（插件）** → **Discover** → 点击 **`+`** *（鼠标悬停在 `+` 上会显示 **Add marketplace**)*.
   2. 输入 `longpi233/codex-bridge`，点击 **Sync**。
   3. 同步完成后安装 **`codex-bridge`** 即可。
 - **Claude Code**：
@@ -131,17 +131,18 @@
   ```
   也可以直接加载本地克隆目录：`claude --plugin-dir /path/to/codex-bridge`。
 
-#### 方式 B：上传预构建的 `.plugin` 插件包（Claude Desktop 离线方式）
+#### 方式 B：上传预构建的 `.plugin` 插件包（Claude Desktop Cowork 离线方式）
 
 1. 前往 [GitHub Releases](https://github.com/longpi233/codex-bridge/releases/latest) 下载 **`codex-bridge.plugin`** *（或克隆仓库后运行 `python scripts/pack_claude_plugin.py` 自行打包）*。
-2. 在 Claude Desktop 打开 **Settings…（设置）** → **Customize（自定义）** → **Plugins（插件）** → **Upload local plugin**，拖入或选择 `codex-bridge.plugin`。
+2. 在 Claude Desktop 打开 **Customize（自定义）** → **Plugins（插件）** → **Upload local plugin**，拖入或选择 `codex-bridge.plugin`。
 
-#### 手动配置（如需自定义 Python 路径或环境变量）
+#### 手动配置（Desktop Chat 标签页、自定义 Python 路径或环境变量）
 
-- **Claude Desktop**：打开 **Settings… → Developer → Edit Config**（Windows 为 `%APPDATA%\Claude\claude_desktop_config.json`，macOS 为 `~/Library/Application Support/Claude/claude_desktop_config.json`），按 [第 4 节](#4-cursorwindsurfworkbuddy-及其他-mcp-客户端) 的 JSON 模板填写，保存后彻底退出并重启 Claude Desktop。
+- **Claude Desktop（Chat / Cowork）**：打开 **Settings… → Developer → Edit Config**（Windows 为 `%APPDATA%\Claude\claude_desktop_config.json`，macOS 为 `~/Library/Application Support/Claude/claude_desktop_config.json`），按 [第 4 节](#4-cursorwindsurfworkbuddy-及其他-mcp-客户端) 的 JSON 模板填写（macOS/Linux 若无 `python` 请用 `python3` 或完整路径），保存后彻底退出并重启 Claude Desktop。
 - **Claude Code CLI**：
   ```bash
   git clone https://github.com/longpi233/codex-bridge.git /path/to/codex-bridge
+  # macOS / Linux 若无 python 命令，请改用 python3
   claude mcp add-json codex-bridge '{"command":"python","args":["-u","/path/to/codex-bridge/server/codex_mcp_server.py"]}'
   ```
   *（如需全局生效，在 `codex-bridge` 前加上 `-s user`。）*
@@ -158,13 +159,13 @@ DSH 原生支持以 Cordis 插件包形式安装 `codex-bridge`，安装后将**
   dsh plugin --profile desktop add github:longpi233/codex-bridge
   ```
   *（也可从本地目录安装：`dsh plugin --profile desktop add /path/to/codex-bridge`。）*
-  随后在 DSH 的「插件」页面启用 **`codex-bridge`**（或在 `~/.dsh/profiles/<profile>/package.json` 的 `dsh.profile.bundles` 中加入 `"codex-bridge"`）即可。
+  随后在 DSH 的「插件」页面启用 **`codex-bridge`**（或在 `~/.dsh/profiles/<profile>/package.json` 的 `dsh.profile.bundles` 中加入 `"codex-bridge"`）即可。*（如果你此前手动配置过下方的 `cordis.patch.yml` 条目，请先删除旧条目再启用插件包。）*
 
 - **或手动写入 `cordis.patch.yml`**：
   将以下片段追加到 `~/.dsh/profiles/<profile>/cordis.patch.yml` 并保存（DSH 会自动热重载，无需重启）：
   ```yaml
   - insert:
-      - id: codex-bridge-mcp
+      - id: codex-bridge-mcp-manual
         name: '@deepseek-ai/dsh-mcp-client'
         config:
           serverName: codex-bridge
@@ -246,7 +247,7 @@ DSH 原生支持以 Cordis 插件包形式安装 `codex-bridge`，安装后将**
   printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
     '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
     '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
-    | python -u server/codex_mcp_server.py
+    | python3 -u server/codex_mcp_server.py
   ```
 
 - **正常返回 2 行 JSON（包含全部 6 个工具）**：说明服务端本身正常，请检查客户端配置文件路径、改为填写 Python 完整路径并完全重启客户端（WorkBuddy 需在自定义连接器中点击**信任**）。

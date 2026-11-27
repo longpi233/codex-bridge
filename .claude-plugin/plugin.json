@@ -1,7 +1,7 @@
 {
   "name": "codex-bridge",
   "displayName": "Codex GPT Bridge",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Zero-dependency, cross-platform MCP stdio bridge to OpenAI Codex CLI with live quota routing, async background jobs, code review, multimodal images, and multi-turn resume.",
   "author": {
     "name": "longpi233",

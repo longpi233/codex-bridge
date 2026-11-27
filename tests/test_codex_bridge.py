@@ -166,31 +166,53 @@ def test_unit_fixes():
     assert not close_errors, f"Concurrent close errors: {close_errors}"
     assert job_obj.handle is None
 
-    # 8. _git_fingerprint changes when tracked file diff changes (mocked for sandbox portability)
+    # 8. _git_fingerprint disables hooks/fsmonitor and detects unstaged, staged, and untracked changes
     orig_subproc_run = mod.subprocess.run
     try:
-        diff_payload = [b"diff --git a/a.py b/a.py\n-x = 1\n+x = 2\n"]
+        with tempfile.TemporaryDirectory() as fp_dir:
+            untracked_file = os.path.join(fp_dir, "untracked.txt")
+            with open(untracked_file, "wb") as uf:
+                uf.write(b"v1")
+            diff_payload = [b"diff --git a/a.py b/a.py\n-x = 1\n+x = 2\n"]
+            cached_payload = [b""]
+            status_payload = [b" M a.py\x00?? untracked.txt\x00"]
+            fail_diff = [False]
 
-        def fake_git_run(cmd, **kwargs):
-            class Res:
-                def __init__(self, returncode, stdout):
-                    self.returncode = returncode
-                    self.stdout = stdout
+            def fake_git_run(cmd, **kwargs):
+                assert "-c" in cmd and "core.fsmonitor=false" in cmd and "core.hooksPath=" in cmd, cmd
 
-            if "rev-parse" in cmd:
-                return Res(0, b"deadbeef\n")
-            if "status" in cmd:
-                return Res(0, b" M a.py\n")
-            if "diff" in cmd:
-                return Res(0, diff_payload[0])
-            raise AssertionError(f"Unexpected command: {cmd}")
+                class Res:
+                    def __init__(self, returncode, stdout):
+                        self.returncode = returncode
+                        self.stdout = stdout
 
-        mod.subprocess.run = fake_git_run
-        fp1 = mod._git_fingerprint(REPO_ROOT)
-        diff_payload[0] = b"diff --git a/a.py b/a.py\n-x = 1\n+x = 3\n"
-        fp2 = mod._git_fingerprint(REPO_ROOT)
-        assert fp1 is not None and fp2 is not None
-        assert fp1 != fp2, f"Expected fingerprint to change when diff changed: {fp1} vs {fp2}"
+                if "rev-parse" in cmd:
+                    return Res(0, b"deadbeef\n")
+                if "status" in cmd:
+                    return Res(0, status_payload[0])
+                if "--cached" in cmd:
+                    return Res(0, cached_payload[0])
+                if "diff" in cmd:
+                    return Res(1 if fail_diff[0] else 0, diff_payload[0])
+                raise AssertionError(f"Unexpected command: {cmd}")
+
+            mod.subprocess.run = fake_git_run
+            fp1 = mod._git_fingerprint(fp_dir)
+            diff_payload[0] = b"diff --git a/a.py b/a.py\n-x = 1\n+x = 3\n"
+            fp2 = mod._git_fingerprint(fp_dir)
+            assert fp1 is not None and fp2 is not None and fp1 != fp2, (fp1, fp2)
+
+            cached_payload[0] = b"diff --git a/b.py b/b.py\n+staged = 1\n"
+            fp3 = mod._git_fingerprint(fp_dir)
+            assert fp3 is not None and fp3 != fp2
+
+            with open(untracked_file, "wb") as uf:
+                uf.write(b"v2-modified")
+            fp4 = mod._git_fingerprint(fp_dir)
+            assert fp4 is not None and fp4 != fp3
+
+            fail_diff[0] = True
+            assert mod._git_fingerprint(fp_dir) is None
     finally:
         mod.subprocess.run = orig_subproc_run
 
@@ -457,7 +479,7 @@ print(json.dumps({"type": "thread.started", "thread_id": "sess-bg-1"}))
 
             bg_res = mod.tool_exec({"prompt": "bg check", "cwd": bg_dir, "background": True})
             assert bg_res["resumable"] is True
-            assert "20-45" in bg_res.get("note", "") and "90-120" in bg_res.get("note", ""), bg_res
+            assert "30-45" in bg_res.get("note", "") and "90-120" in bg_res.get("note", ""), bg_res
             done_bg = mod.tool_job_status({"job_id": bg_res["jobId"], "wait_seconds": 120})
             assert done_bg["status"] == "completed" and "toolCallsCount" in done_bg
 
@@ -647,20 +669,69 @@ time.sleep(10.0)
     sys.path.insert(0, os.path.join(REPO_ROOT, "scripts"))
     try:
         import pack_claude_plugin
-        try:
-            pack_claude_plugin.build_plugin_archive(pack_claude_plugin.Path("LICENSE"))
-            raise AssertionError("Expected ValueError when --output points to LICENSE")
-        except ValueError:
-            pass
+        import zipfile
+        for bad_target in ("LICENSE", "README.md"):
+            try:
+                pack_claude_plugin.build_plugin_archive(pack_claude_plugin.Path(bad_target))
+                raise AssertionError(f"Expected ValueError when --output points to {bad_target}")
+            except ValueError:
+                pass
+        with tempfile.TemporaryDirectory() as pk_tmp:
+            out_plugin = pack_claude_plugin.build_plugin_archive(pack_claude_plugin.Path(pk_tmp) / "test.plugin")
+            with zipfile.ZipFile(out_plugin, "r") as zf:
+                names = zf.namelist()
+            assert "assets/logo.png" not in names and ".claude-plugin/icon.png" in names, names
+            assert len(names) == 9, names
     finally:
         sys.path.pop(0)
 
-    # 19. Codex binary resolution (native codex.exe on Windows when installed via npm)
-    codex_bin, env = mod._resolve_codex_command()
-    print("Resolved codex_bin:", codex_bin)
-    if os.name == "nt" and "codex-win32" in codex_bin.lower():
-        assert codex_bin.lower().endswith("codex.exe")
-        assert env.get("CODEX_MANAGED_BY_NPM") == "1"
+    # 19. Codex binary / argv resolution & Windows .cmd metacharacter guard (purely offline)
+    orig_which = mod.shutil.which
+    orig_os_name = mod.os.name
+    orig_plat_machine = mod.platform.machine
+    old_cb = os.environ.pop("CODEX_BIN", None)
+    try:
+        with tempfile.TemporaryDirectory() as res_tmp:
+            npm_dir = os.path.join(res_tmp, "npm")
+            cmd_shim = os.path.join(npm_dir, "codex.cmd")
+            node_exe = os.path.join(res_tmp, "node.exe")
+            codex_js = os.path.join(npm_dir, "node_modules", "@openai", "codex", "bin", "codex.js")
+            os.makedirs(os.path.dirname(codex_js), exist_ok=True)
+            for p in (cmd_shim, node_exe, codex_js):
+                with open(p, "wb") as f:
+                    f.write(b"")
+
+            mod.os.name = "nt"
+            mod.platform.machine = lambda: "AMD64"
+            mod.shutil.which = lambda name: cmd_shim if name == "codex" else (node_exe if name == "node" else None)
+
+            argv_js, env_js = mod._resolve_codex_argv()
+            assert argv_js == [node_exe, codex_js], argv_js
+            assert env_js.get("CODEX_MANAGED_BY_NPM") == "1"
+
+            native_exe = os.path.join(
+                npm_dir, "node_modules", "@openai", "codex", "node_modules",
+                "@openai", "codex-win32-x64", "vendor", "x86_64-pc-windows-msvc", "codex", "codex.exe",
+            )
+            os.makedirs(os.path.dirname(native_exe), exist_ok=True)
+            with open(native_exe, "wb") as f:
+                f.write(b"")
+            bin_native, env_native = mod._resolve_codex_command()
+            assert bin_native == native_exe and env_native.get("CODEX_MANAGED_BY_NPM") == "1"
+
+            mod._guard_win_batch_argv([cmd_shim, "exec", "-s", "read-only", "safe_token"])
+            for bad_tok in ("a&calc", "foo|bar", "%TEMP%"):
+                try:
+                    mod._guard_win_batch_argv([cmd_shim, "exec", bad_tok])
+                    raise AssertionError(f"Expected ValueError for batch metacharacter in {bad_tok!r}")
+                except ValueError:
+                    pass
+    finally:
+        mod.shutil.which = orig_which
+        mod.os.name = orig_os_name
+        mod.platform.machine = orig_plat_machine
+        if old_cb is not None:
+            os.environ["CODEX_BIN"] = old_cb
 
     # 20. Upstream app-server clientInfo stays lightweight without inline icons
     assert "icons" not in mod.CLIENT_INFO
@@ -668,6 +739,214 @@ time.sleep(10.0)
     assert mod.CLIENT_INFO["version"] == mod.SERVER_INFO["version"]
 
     print("UNIT FIXES: ALL PASSED")
+
+
+def test_audit_hardening():
+    # 1. CLI token validation & writable-sandbox cwd requirement
+    with tempfile.TemporaryDirectory() as tmpdir:
+        fc = _make_fake_codex(
+            tmpdir,
+            "fake_hardening",
+            """import json, sys, time
+args = sys.argv[1:]
+_ = sys.stdin.read()
+out_idx = args.index("-o") + 1
+with open(args[out_idx], "w", encoding="utf-8") as of:
+    of.write("OK")
+print(json.dumps({"type": "thread.started", "thread_id": "sess-harden-1"}))
+""",
+        )
+        old_cb = os.environ.get("CODEX_BIN")
+        os.environ["CODEX_BIN"] = fc
+        try:
+            for field, val in (("session_id", "-bad"), ("model", "--bad"), ("profile", "bad\nline")):
+                try:
+                    mod.tool_exec({"prompt": "hi", field: val})
+                    raise AssertionError(f"Expected ValueError for {field}={val!r}")
+                except ValueError:
+                    pass
+            for field, val in (("base", "-main"), ("commit", "bad ref")):
+                try:
+                    mod.tool_review({"cwd": tmpdir, field: val})
+                    raise AssertionError(f"Expected ValueError for review {field}={val!r}")
+                except ValueError:
+                    pass
+
+            try:
+                mod.tool_exec({"prompt": "edit", "sandbox": "workspace-write"})
+                raise AssertionError("Expected ValueError for workspace-write without cwd")
+            except ValueError as exc:
+                assert "cwd" in str(exc)
+
+            # Unknown argument rejection (additionalProperties: false)
+            try:
+                mod._dispatch_tool("codex_exec", {"prompt": "hi", "backround": True}, threading.Event())
+                raise AssertionError("Expected ValueError for unknown argument")
+            except ValueError as exc:
+                assert "Unknown argument" in str(exc)
+
+            # Failed/ephemeral resume must not leak SESSION_RUN_LOCKS
+            with mod.SESSIONS_LOCK:
+                before_locks = len(mod.SESSION_RUN_LOCKS)
+            mod.tool_exec({"prompt": "ephem", "session_id": "ephem-noleak-1", "ephemeral": True})
+            with mod.SESSIONS_LOCK:
+                assert "ephem-noleak-1" not in mod.SESSION_RUN_LOCKS
+                assert len(mod.SESSION_RUN_LOCKS) == before_locks
+
+            # Request ID conflict check
+            j_ok = mod.tool_exec({"prompt": "task-A", "cwd": tmpdir, "background": True, "request_id": "req-conflict-1"})
+            try:
+                mod.tool_exec({"prompt": "task-B", "cwd": tmpdir, "background": True, "request_id": "req-conflict-1"})
+                raise AssertionError("Expected ValueError for conflicting request_id reuse")
+            except ValueError as exc:
+                assert "different request" in str(exc)
+            mod.tool_job_status({"job_id": j_ok["jobId"], "wait_seconds": 10})
+        finally:
+            if old_cb is None:
+                os.environ.pop("CODEX_BIN", None)
+            else:
+                os.environ["CODEX_BIN"] = old_cb
+
+    # 2. Late tool_job_cancel preserves already-published terminal status
+    ev_late = threading.Event()
+    with mod.JOBS_LOCK:
+        mod.JOBS["late-done-1"] = {
+            "jobId": "late-done-1",
+            "requestId": None,
+            "kind": "exec",
+            "status": "completed",
+            "startedAt": time.time() - 1.0,
+            "lastActivityAt": time.time(),
+            "finishedAt": time.time(),
+            "meta": {"model": None},
+            "sessionId": None,
+            "agentMessagesCount": 0,
+            "toolCallsCount": 0,
+            "lastMessagePreview": None,
+            "result": {"exitCode": 0, "response": "DONE"},
+            "error": None,
+            "proc": None,
+            "jobObj": None,
+            "doneEvent": ev_late,
+        }
+
+    def _finish_soon():
+        time.sleep(0.1)
+        ev_late.set()
+
+    threading.Thread(target=_finish_soon, daemon=True).start()
+    try:
+        late_res = mod.tool_job_cancel({"job_id": "late-done-1"})
+        assert late_res["status"] == "completed", late_res
+    finally:
+        with mod.JOBS_LOCK:
+            mod.JOBS.pop("late-done-1", None)
+
+    # 3. Newly created persistent background session holds mutex until Turn 1 finishes
+    with tempfile.TemporaryDirectory() as race_dir:
+        order_log = os.path.join(race_dir, "order.log")
+        fc_race = _make_fake_codex(
+            race_dir,
+            "fake_session_race",
+            f"""import json, sys, time
+args = sys.argv[1:]
+_ = sys.stdin.read()
+is_resume = "resume" in args
+if not is_resume:
+    print(json.dumps({{"type": "thread.started", "thread_id": "sess-live-own-1"}}), flush=True)
+    with open({order_log!r}, "a", encoding="utf-8") as lf:
+        lf.write("turn1_start\\n")
+    time.sleep(0.8)
+    with open({order_log!r}, "a", encoding="utf-8") as lf:
+        lf.write("turn1_end\\n")
+else:
+    with open({order_log!r}, "a", encoding="utf-8") as lf:
+        lf.write("turn2_start\\n")
+out_idx = args.index("-o") + 1
+with open(args[out_idx], "w", encoding="utf-8") as of:
+    of.write("RACE_OK")
+""",
+        )
+        old_cb = os.environ.get("CODEX_BIN")
+        os.environ["CODEX_BIN"] = fc_race
+        try:
+            j1 = mod.tool_exec({"prompt": "turn1", "cwd": race_dir, "background": True})
+            deadline = time.monotonic() + 5.0
+            seen_sid = None
+            while time.monotonic() < deadline:
+                st = mod.tool_job_status({"job_id": j1["jobId"]})
+                if st.get("sessionId"):
+                    seen_sid = st["sessionId"]
+                    break
+                time.sleep(0.05)
+            assert seen_sid == "sess-live-own-1", st
+            j2 = mod.tool_exec({"prompt": "turn2", "session_id": seen_sid, "background": True})
+            r1 = mod.tool_job_status({"job_id": j1["jobId"], "wait_seconds": 10})
+            r2 = mod.tool_job_status({"job_id": j2["jobId"], "wait_seconds": 10})
+            assert r1["status"] == "completed" and r2["status"] == "completed", (r1, r2)
+            with open(order_log, encoding="utf-8") as lf:
+                events = [ln.strip() for ln in lf if ln.strip()]
+            assert events == ["turn1_start", "turn1_end", "turn2_start"], events
+        finally:
+            if old_cb is None:
+                os.environ.pop("CODEX_BIN", None)
+            else:
+                os.environ["CODEX_BIN"] = old_cb
+
+    # 4. Quota missing/empty/expired fallback & model pagination truncation
+    assert mod._format_window({}) is None
+    assert mod._format_window({"usedPercent": True}) is None
+
+    orig_call_batch = mod.APP_SERVER.call_batch
+    old_ch = os.environ.get("CODEX_HOME")
+    with tempfile.TemporaryDirectory() as fake_home:
+        os.environ["CODEX_HOME"] = fake_home
+        try:
+            mod.APP_SERVER.call_batch = lambda reqs, timeout=15.0: [
+                {"result": {"account": {"type": "chatgpt"}}},
+                {"result": {"ordinaryUsageAllowed": True, "rateLimits": {"primary": {}, "secondary": None}}},
+            ]
+            q_miss = mod.tool_quota_status({})
+            assert q_miss["recommendation"]["tier"] == "unknown", q_miss
+
+            # Expired fallback window must NOT produce use_it_or_lose_it
+            sess_dir = os.path.join(fake_home, "sessions")
+            os.makedirs(sess_dir, exist_ok=True)
+            old_epoch = int(time.time()) - 3600
+            with open(os.path.join(sess_dir, "old.jsonl"), "w", encoding="utf-8") as sf:
+                sf.write(json.dumps({
+                    "timestamp": "2026-01-01T00:00:00Z",
+                    "payload": {
+                        "rate_limits": {
+                            "primary": {"usedPercent": 10, "windowDurationMins": 300, "resetsAt": old_epoch},
+                            "secondary": {"usedPercent": 20, "windowDurationMins": 10080, "resetsAt": old_epoch},
+                        }
+                    },
+                }) + "\n")
+
+            def _boom(reqs, timeout=15.0):
+                raise RuntimeError("offline")
+
+            mod.APP_SERVER.call_batch = _boom
+            q_exp = mod.tool_quota_status({})
+            assert q_exp["source"] == "session-fallback"
+            assert q_exp["recommendation"]["tier"] == "unknown", q_exp
+            assert q_exp["staleMinutes"] and q_exp["staleMinutes"] > 60, q_exp
+
+            # Repeated nextCursor truncates cleanly with warning
+            mod.APP_SERVER.call_batch = lambda reqs, timeout=15.0: [
+                {"result": {"data": [{"id": "m1", "hidden": False}], "nextCursor": "same-cur"}}
+            ]
+            m_res = mod.tool_list_models({})
+            assert m_res.get("truncated") is True and "warning" in m_res, m_res
+        finally:
+            mod.APP_SERVER.call_batch = orig_call_batch
+            if old_ch is None:
+                os.environ.pop("CODEX_HOME", None)
+            else:
+                os.environ["CODEX_HOME"] = old_ch
+
+    print("AUDIT HARDENING: ALL PASSED")
 
 
 def test_stderr_tail_and_queued_cancel():
@@ -831,6 +1110,7 @@ print(json.dumps({"type": "thread.started", "thread_id": "fake-exec-1"}))
 
         env = os.environ.copy()
         env["CODEX_BIN"] = fake_cmd
+        env["PYTHONINTMAXSTRDIGITS"] = "4300"
 
         proc = subprocess.Popen(
             [sys.executable, "-u", SERVER_PATH],
@@ -842,6 +1122,7 @@ print(json.dumps({"type": "thread.started", "thread_id": "fake-exec-1"}))
         assert proc.stdin and proc.stdout
 
         responses = {}
+        raw_messages = []
         resp_lock = threading.Lock()
 
         def reader():
@@ -850,8 +1131,9 @@ print(json.dumps({"type": "thread.started", "thread_id": "fake-exec-1"}))
                 if not raw:
                     break
                 msg = json.loads(raw.decode("utf-8"))
-                if "id" in msg:
-                    with resp_lock:
+                with resp_lock:
+                    raw_messages.append(msg)
+                    if isinstance(msg, dict) and "id" in msg:
                         responses[msg["id"]] = msg
 
         threading.Thread(target=reader, daemon=True).start()
@@ -927,6 +1209,21 @@ print(json.dumps({"type": "thread.started", "thread_id": "fake-exec-1"}))
         send({"jsonrpc": "2.0", "id": 108, "method": "ping", "params": {}})
         assert wait_id(108, timeout=2.0)["result"] == {}
 
+        # Strict jsonrpc "2.0" / empty-object / ID-bearing notification / batch rejection checks
+        send({"id": 111, "method": "ping", "params": {}})
+        assert wait_id(111, timeout=2.0)["error"]["code"] == -32600
+        send({"jsonrpc": "1.0", "id": 112, "method": "ping", "params": {}})
+        assert wait_id(112, timeout=2.0)["error"]["code"] == -32600
+        send({})
+        assert wait_id(None, timeout=2.0)["error"]["code"] == -32600
+        send({"jsonrpc": "2.0", "id": 113, "method": "notifications/cancelled", "params": {"requestId": 4}})
+        assert wait_id(113, timeout=2.0)["error"]["code"] == -32601
+        send([{"jsonrpc": "2.0", "id": 114, "method": "ping"}])
+        assert wait_id(None, timeout=2.0)["error"]["code"] == -32600
+        send({"jsonrpc": "2.0", "id": 115, "method": "tools/call", "params": {"name": "codex_exec", "arguments": {"prompt": "hi", "badKey": 1}}})
+        r_unknown = wait_id(115, timeout=2.0)["result"]
+        assert r_unknown["isError"] is True and "Unknown argument" in r_unknown["content"][0]["text"], r_unknown
+
         send({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "codex_exec", "arguments": {"prompt": "slow", "background": True, "request_id": "req-1"}}})
         send({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "codex_exec", "arguments": {"prompt": "slow", "background": True, "request_id": "req-1"}}})
         r2 = json.loads(wait_id(2)["result"]["content"][0]["text"])
@@ -959,10 +1256,37 @@ print(json.dumps({"type": "thread.started", "thread_id": "fake-exec-1"}))
 
         proc.terminate()
         proc.wait(timeout=3)
+
+        # Dedicated MCP 2025-03-26 JSON-RPC batch test
+        batch_proc = subprocess.Popen(
+            [sys.executable, "-u", SERVER_PATH],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+        )
+        assert batch_proc.stdin and batch_proc.stdout
+        batch_input = "\n".join([
+            json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-03-26"}}),
+            json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+            json.dumps([
+                {"jsonrpc": "2.0", "id": 2, "method": "ping"},
+                {"jsonrpc": "2.0", "id": 3, "method": "ping"},
+            ]),
+            json.dumps([{"jsonrpc": "2.0", "method": "notifications/initialized"}]),
+            json.dumps({"jsonrpc": "2.0", "id": 4, "method": "ping"}),
+        ]) + "\n"
+        out_bytes, _ = batch_proc.communicate(batch_input.encode("utf-8"), timeout=10)
+        out_lines = [json.loads(ln) for ln in out_bytes.decode("utf-8").splitlines() if ln.strip()]
+        assert len(out_lines) == 3, out_lines
+        assert out_lines[0]["result"]["protocolVersion"] == "2025-03-26"
+        assert isinstance(out_lines[1], list) and [x["id"] for x in out_lines[1]] == [2, 3], out_lines[1]
+        assert out_lines[2]["id"] == 4 and out_lines[2]["result"] == {}, out_lines[2]
+
         print(f"MCP CONCURRENCY/CANCEL/REVIEW: ALL PASSED (ping={ping_ms:.1f}ms during 20s wait)")
 
 
-def test_live_codex():
+def run_live_codex():
     q = mod.tool_quota_status({})
     assert q["source"] == "codex-app-server-live"
     assert q["recommendation"]["tier"] != "unknown"
@@ -999,8 +1323,9 @@ if __name__ == "__main__":
     parser.add_argument("--live", action="store_true", help="Also run live Codex CLI smoke tests.")
     args = parser.parse_args()
     test_unit_fixes()
+    test_audit_hardening()
     test_stderr_tail_and_queued_cancel()
     test_profile_and_images_flag_placement()
     test_mcp_concurrency_cancel_and_idempotency()
     if args.live:
-        test_live_codex()
+        run_live_codex()

@@ -36,8 +36,8 @@
 
 ## Why Use codex-bridge
 
-- **Smart Quota and Reset-Time Routing**: Checks your live 5-hour and 7-day Codex limits before delegating, so your main agent knows when to go all-in with `gpt-6.2-astra` and when to conserve quota.
-- **No Client Timeouts on Deep Audits**: Runs long analyses and large git diff reviews asynchronously in the background and collects results cleanly once ready.
+- **Smart Quota and Reset-Time Routing**: Your main agent can query live 5-hour and 7-day Codex limits (`codex_quota_status`) before delegating, knowing when to go all-in with `gpt-6.2-astra` and when to conserve quota.
+- **No Client Timeouts on Deep Audits**: Supports asynchronous background execution (`background: true`) for long analyses and large git diff reviews, collecting results cleanly via `codex_job_status`.
 - **Multi-Turn Context Continuity**: Preserves Codex sessions across follow-up turns so you can review, fix, and re-verify without starting from scratch.
 - **Multimodal and Config Profiles**: Attach local screenshots to prompts (`images`) or reuse your existing `~/.codex` config profiles (`profile`).
 - **Zero Dependencies, Cross-Platform**: Built purely on the Python 3.10+ standard library and works out of the box on Windows, macOS, and Linux.
@@ -111,11 +111,11 @@ Installs the MCP server, `codex-delegate` skill, always-on rule, and `codex_work
 
 ### 2. Claude Code and Claude Desktop
 
-Includes all 6 MCP tools, the `codex-delegate` skill, and a native `codex-worker` subagent.
+The native plugin bundles all 6 MCP tools, the `codex-delegate` skill, and a native `codex-worker` subagent *(on Claude Desktop, plugin-local MCP servers and subagents apply to **Cowork** and **Claude Code**; if you use the standard Desktop **Chat** tab, use [Manual Setup](#manual-setup-custom-python-path-or-environment-variables) below)*.
 
 #### Option A: Sync via GitHub Marketplace (Recommended — Easy Updates)
 
-- **Claude Desktop**:
+- **Claude Desktop (Cowork)**:
   1. Open **Customize** → **Plugins** → **Discover** → click **`+`** *(hovering over `+` shows **Add marketplace**)*.
   2. Enter `longpi233/codex-bridge` and click **Sync**.
   3. Install **`codex-bridge`** from the synced marketplace.
@@ -131,17 +131,18 @@ Includes all 6 MCP tools, the `codex-delegate` skill, and a native `codex-worker
   ```
   You can also load a local clone directly with `claude --plugin-dir /path/to/codex-bridge`.
 
-#### Option B: Upload Prebuilt `.plugin` Package (Claude Desktop)
+#### Option B: Upload Prebuilt `.plugin` Package (Claude Desktop Cowork)
 
 1. Download **`codex-bridge.plugin`** from [GitHub Releases](https://github.com/longpi233/codex-bridge/releases/latest) *(or build it locally with `python scripts/pack_claude_plugin.py`)*.
-2. Open **Settings…** → **Customize** → **Plugins** → **Upload local plugin** and select `codex-bridge.plugin`.
+2. Open **Customize** → **Plugins** → **Upload local plugin** and select `codex-bridge.plugin`.
 
-#### Manual Setup (Custom Python Path or Environment Variables)
+#### Manual Setup (Desktop Chat Tab, Custom Python Path, or Env Vars)
 
-- **Claude Desktop**: Open **Settings… → Developer → Edit Config** (`%APPDATA%\Claude\claude_desktop_config.json` on Windows or `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS), use the JSON template in [§4](#4-cursor-windsurf-workbuddy-and-other-mcp-clients), then fully quit and relaunch Claude Desktop.
+- **Claude Desktop (Chat / Cowork)**: Open **Settings… → Developer → Edit Config** (`%APPDATA%\Claude\claude_desktop_config.json` on Windows or `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS), use the JSON template in [§4](#4-cursor-windsurf-workbuddy-and-other-mcp-clients) with your Python path (`python` on Windows or `python3` / full path on macOS/Linux), then fully quit and relaunch Claude Desktop.
 - **Claude Code CLI**:
   ```bash
   git clone https://github.com/longpi233/codex-bridge.git /path/to/codex-bridge
+  # Use `python3` instead of `python` on macOS/Linux if `python` is unavailable
   claude mcp add-json codex-bridge '{"command":"python","args":["-u","/path/to/codex-bridge/server/codex_mcp_server.py"]}'
   ```
   *(Add `-s user` before `codex-bridge` to register globally.)*
@@ -158,13 +159,13 @@ DSH supports `codex-bridge` as a native Cordis plugin bundle, automatically moun
   dsh plugin --profile desktop add github:longpi233/codex-bridge
   ```
   *(Or pass a local clone path: `dsh plugin --profile desktop add /path/to/codex-bridge`.)*
-  Then enable **`codex-bridge`** in DSH's Plugins page (or add `"codex-bridge"` to `dsh.profile.bundles` in `~/.dsh/profiles/<profile>/package.json`).
+  Then enable **`codex-bridge`** in DSH's Plugins page (or add `"codex-bridge"` to `dsh.profile.bundles` in `~/.dsh/profiles/<profile>/package.json`). *(If you previously added a manual `cordis.patch.yml` entry below, remove it before enabling the plugin bundle.)*
 
 - **Or configure manually via `cordis.patch.yml`**:
   Append the entry below to `~/.dsh/profiles/<profile>/cordis.patch.yml` and save (DSH hot-reloads without restarting):
   ```yaml
   - insert:
-      - id: codex-bridge-mcp
+      - id: codex-bridge-mcp-manual
         name: '@deepseek-ai/dsh-mcp-client'
         config:
           serverName: codex-bridge
@@ -246,7 +247,7 @@ If tools do not show up in your client, verify that the server itself responds c
   printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
     '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
     '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
-    | python -u server/codex_mcp_server.py
+    | python3 -u server/codex_mcp_server.py
   ```
 
 - **Prints 2 JSON lines listing all 6 tools**: The server is working — check your client's config path, specify the full path to Python, and fully restart the client (in WorkBuddy, also click **Trust** under Custom Connectors).

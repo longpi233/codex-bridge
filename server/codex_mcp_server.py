@@ -38,7 +38,7 @@ from typing import Any
 
 CLIENT_INFO = {
     "name": "codex-bridge",
-    "version": "0.2.3",
+    "version": "0.2.4",
 }
 _MAX_SERVER_ICON_BYTES = 10_000
 _MAX_SERVER_INFO_JSON_CHARS = 15_500
@@ -92,11 +92,17 @@ FINISHED_JOB_TTL_SECONDS = 1800.0
 MAX_STDERR_BYTES = 65536
 VALID_REASONING_EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")
 VALID_SANDBOXES = ("read-only", "workspace-write", "danger-full-access")
+_TERMINAL_JOB_STATUSES = ("completed", "failed", "timed_out", "cancelled")
+_SANDBOX_RANK = {"read-only": 0, "workspace-write": 1, "danger-full-access": 2}
+_WIN_CMD_META_CHARS = frozenset("&|<>^%!\r\n\x00")
 
 SEND_LOCK = threading.Lock()
 LOG_LOCK = threading.Lock()
 CANCEL_LOCK = threading.Lock()
 CANCEL_EVENTS: dict[Any, threading.Event] = {}
+REQUEST_FUTURES: dict[Any, concurrent.futures.Future[Any]] = {}
+SHUTDOWN_EVENT = threading.Event()
+NEGOTIATED_PROTOCOL_VERSION: str = PROTOCOL_VERSION
 
 JOBS_LOCK = threading.Lock()
 JOBS: dict[str, dict[str, Any]] = {}
@@ -288,6 +294,33 @@ def _resolve_codex_command() -> tuple[str, dict[str, str]]:
                         return candidate, env
 
     return which_path, env
+
+
+def _resolve_codex_argv() -> tuple[list[str], dict[str, str]]:
+    """Resolve Codex command argv, bypassing Windows `.cmd` wrappers via `node` + `codex.js` when possible."""
+    codex_bin, env = _resolve_codex_command()
+    if os.name == "nt" and not env.get("CODEX_BIN") and codex_bin.lower().endswith((".cmd", ".bat")):
+        npm_dir = os.path.dirname(codex_bin)
+        pkg_root = os.path.join(npm_dir, "node_modules", "@openai", "codex")
+        codex_js = os.path.join(pkg_root, "bin", "codex.js")
+        node_exe = shutil.which("node")
+        if node_exe and os.path.isfile(codex_js):
+            env.setdefault("CODEX_MANAGED_BY_NPM", "1")
+            if os.path.isdir(pkg_root):
+                env.setdefault("CODEX_MANAGED_PACKAGE_ROOT", pkg_root)
+            return [node_exe, codex_js], env
+    return [codex_bin], env
+
+
+def _guard_win_batch_argv(cmd: list[str]) -> None:
+    """Reject cmd.exe metacharacters when executing a Windows batch wrapper."""
+    if os.name == "nt" and cmd and cmd[0].lower().endswith((".cmd", ".bat")):
+        for arg in cmd[1:]:
+            if any(ch in _WIN_CMD_META_CHARS for ch in arg):
+                raise ValueError(
+                    "Refusing to pass cmd.exe shell metacharacters to a Windows .cmd/.bat Codex "
+                    "wrapper. Point CODEX_BIN to native codex.exe or remove metacharacters from arguments."
+                )
 
 
 class _WinJobObject:
@@ -482,12 +515,26 @@ def _terminate_process_tree(proc: subprocess.Popen[bytes], job_obj: _WinJobObjec
                 except Exception:
                     pass
         elif proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=2.0)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=2.0)
+            if job_obj is None or not job_obj.handle:
+                pid = getattr(proc, "pid", None)
+                if isinstance(pid, int) and pid > 0:
+                    try:
+                        subprocess.run(
+                            ["taskkill", "/F", "/T", "/PID", str(pid)],
+                            stdin=subprocess.DEVNULL,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            timeout=3,
+                        )
+                    except Exception:
+                        pass
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=2.0)
         else:
             proc.wait(timeout=0.5)
     except Exception:
@@ -523,10 +570,12 @@ class _AppServerClient:
 
     def _start_unlocked(self, timeout: float = 15.0) -> None:
         self._stop_unlocked()
-        codex_bin, env = _resolve_codex_command()
+        codex_argv, env = _resolve_codex_argv()
+        app_cmd = [*codex_argv, "app-server", "--listen", "stdio://"]
+        _guard_win_batch_argv(app_cmd)
         job_obj = _WinJobObject()
         proc = subprocess.Popen(
-            [codex_bin, "app-server", "--listen", "stdio://"],
+            app_cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -694,6 +743,10 @@ def _as_float(val: Any, default: float, name: str, minimum: float, maximum: floa
     return max(minimum, min(maximum, float(val)))
 
 
+def _canonical_cwd(path: str) -> str:
+    return os.path.normcase(os.path.realpath(path))
+
+
 def _validate_cwd(cwd: Any, required: bool = False) -> str | None:
     if cwd is None:
         if required:
@@ -708,6 +761,17 @@ def _validate_cwd(cwd: Any, required: bool = False) -> str | None:
     return norm
 
 
+def _validate_cli_token(val: Any, name: str) -> str:
+    if not isinstance(val, str) or not val.strip():
+        raise ValueError(f"'{name}' must be a non-empty string.")
+    cleaned = val.strip()
+    if cleaned.startswith("-"):
+        raise ValueError(f"'{name}' must not start with '-'.")
+    if any(ch.isspace() or ord(ch) < 32 or ch == "\x7f" for ch in cleaned):
+        raise ValueError(f"'{name}' must not contain whitespace or control characters.")
+    return cleaned
+
+
 def _validate_profile(profile: Any) -> str | None:
     if profile is None:
         return None
@@ -716,6 +780,8 @@ def _validate_profile(profile: Any) -> str | None:
     cleaned = profile.strip()
     if cleaned.startswith("-"):
         raise ValueError("'profile' must not start with '-'.")
+    if any(ord(ch) < 32 or ch == "\x7f" for ch in cleaned):
+        raise ValueError("'profile' must not contain control characters.")
     return cleaned
 
 
@@ -759,8 +825,39 @@ def _release_session_lock_ref(session_id: str) -> None:
         refs = SESSION_LOCK_REFS.get(session_id, 0)
         if refs <= 1:
             SESSION_LOCK_REFS.pop(session_id, None)
+            if session_id not in SESSION_BINDINGS:
+                lock = SESSION_RUN_LOCKS.get(session_id)
+                if lock is not None and not lock.locked():
+                    SESSION_RUN_LOCKS.pop(session_id, None)
         else:
             SESSION_LOCK_REFS[session_id] = refs - 1
+
+
+def _validate_session_binding(
+    session_id: str,
+    cwd: str | None,
+    sandbox_arg: str | None,
+) -> tuple[str | None, str]:
+    with SESSIONS_LOCK:
+        bound_info = dict(SESSION_BINDINGS[session_id]) if session_id in SESSION_BINDINGS else None
+    sandbox = sandbox_arg or "read-only"
+    if bound_info is None:
+        return cwd, sandbox
+    bound_cwd = bound_info.get("cwd")
+    if cwd and bound_cwd and _canonical_cwd(cwd) != _canonical_cwd(bound_cwd):
+        raise ValueError(
+            f"Session {session_id} is bound to cwd '{bound_cwd}', cannot resume with '{cwd}'."
+        )
+    resolved_cwd = cwd or bound_cwd
+    bound_sb = bound_info.get("sandbox")
+    if sandbox_arg is None and bound_sb:
+        sandbox = bound_sb
+    elif bound_sb and _SANDBOX_RANK.get(sandbox, 0) < _SANDBOX_RANK.get(bound_sb, 0):
+        raise ValueError(
+            f"Refusing '{sandbox}' resume on session {session_id} which was created with "
+            f"sandbox '{bound_sb}'."
+        )
+    return resolved_cwd, sandbox
 
 
 def _prune_sessions_unlocked() -> None:
@@ -789,18 +886,24 @@ def _format_window(win: dict[str, Any] | None) -> dict[str, Any] | None:
     if not isinstance(win, dict):
         return None
     used = win.get("usedPercent", win.get("used_percent"))
+    if isinstance(used, bool) or not isinstance(used, (int, float)):
+        return None
     duration = win.get("windowDurationMins", win.get("window_minutes"))
     resets_at = win.get("resetsAt", win.get("resets_at"))
-    remaining = round(max(0.0, 100.0 - float(used)), 2) if used is not None else None
+    remaining = round(max(0.0, 100.0 - float(used)), 2)
 
     resets_local = None
     resets_utc = None
     minutes_until_reset = None
-    if isinstance(resets_at, (int, float)):
+    if not isinstance(resets_at, bool) and isinstance(resets_at, (int, float)):
         now_ts = time.time()
         minutes_until_reset = round(max(0.0, (resets_at - now_ts) / 60.0), 1)
-        resets_utc = datetime.fromtimestamp(resets_at, tz=timezone.utc).isoformat()
-        resets_local = datetime.fromtimestamp(resets_at).astimezone().isoformat()
+        try:
+            resets_utc = datetime.fromtimestamp(resets_at, tz=timezone.utc).isoformat()
+            resets_local = datetime.fromtimestamp(resets_at).astimezone().isoformat()
+        except (OSError, OverflowError, ValueError):
+            resets_utc = None
+            resets_local = None
 
     return {
         "usedPercent": used,
@@ -904,7 +1007,7 @@ def _compute_recommendation(
             ),
         }
 
-    if primary is None and secondary is None:
+    if (primary is None and secondary is None) or (p_rem is None and s_rem is None):
         if isinstance(account, dict) and account.get("type") == "apiKey":
             return {
                 "tier": "api_payg",
@@ -935,7 +1038,7 @@ def _compute_recommendation(
                 "Quota window data was unavailable; start with a small gpt-6.2-sol (low) check.",
             ],
             "avoidUseCases": ["Heavy xhigh/max audits until quota status is confirmed."],
-            "pacingMetrics": {"primary5hSurplusRatio": None, "secondary7dSurplusRatio": None},
+            "pacingMetrics": pacing,
             "guidance": "Rate-limit windows were missing from the response. Proceed conservatively.",
         }
 
@@ -1107,6 +1210,20 @@ def _safe_mtime(path: str) -> float:
         return 0.0
 
 
+def _parse_timestamp_epoch(ts: Any) -> float | None:
+    if not isinstance(ts, bool) and isinstance(ts, (int, float)):
+        return float(ts)
+    if isinstance(ts, str) and ts.strip():
+        try:
+            dt = datetime.fromisoformat(ts.strip().replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.timestamp()
+        except ValueError:
+            return None
+    return None
+
+
 def _fallback_session_rate_limits() -> dict[str, Any] | None:
     pattern = os.path.join(_codex_home(), "sessions", "**", "*.jsonl")
     files = sorted(glob.glob(pattern, recursive=True), key=_safe_mtime, reverse=True)
@@ -1126,13 +1243,52 @@ def _fallback_session_rate_limits() -> dict[str, Any] | None:
             continue
         if last_rl:
             mtime = _safe_mtime(path)
+            sample_epoch = _parse_timestamp_epoch(last_ts) or (mtime if mtime else None)
+            stale_mins = round(max(0.0, (time.time() - sample_epoch) / 60.0), 1) if sample_epoch else None
             return {
                 "source": path,
                 "sampledAt": last_ts or (datetime.fromtimestamp(mtime).astimezone().isoformat() if mtime else None),
-                "staleMinutes": round(max(0.0, (time.time() - mtime) / 60.0), 1) if mtime else None,
+                "staleMinutes": stale_mins,
                 "rateLimits": last_rl,
             }
     return None
+
+
+def _build_session_fallback_quota(fallback: dict[str, Any], reason_msg: str) -> dict[str, Any]:
+    rl = fallback["rateLimits"]
+    primary, secondary = _classify_windows(rl.get("primary"), rl.get("secondary"))
+    credits = rl.get("credits")
+    now_ts = time.time()
+    p_expired = bool(
+        primary and isinstance(primary.get("resetsAtEpoch"), (int, float)) and primary["resetsAtEpoch"] <= now_ts
+    )
+    s_expired = bool(
+        secondary and isinstance(secondary.get("resetsAtEpoch"), (int, float)) and secondary["resetsAtEpoch"] <= now_ts
+    )
+    warning = reason_msg
+    expired_windows = [
+        label
+        for label, is_exp in (("primary 5h", p_expired), ("secondary 7d", s_expired))
+        if is_exp
+    ]
+    if expired_windows:
+        warning += (
+            f" Note: fallback {', '.join(expired_windows)} rate-limit window(s) "
+            "already passed their reset timestamp and were excluded from routing."
+        )
+    rec_primary = None if p_expired else primary
+    rec_secondary = None if s_expired else secondary
+    return {
+        "source": "session-fallback",
+        "sessionFile": fallback["source"],
+        "sampledAt": fallback["sampledAt"],
+        "staleMinutes": fallback["staleMinutes"],
+        "warning": warning,
+        "primary5hWindow": primary,
+        "secondary7dWindow": secondary,
+        "credits": credits,
+        "recommendation": _compute_recommendation(None, rec_primary, rec_secondary, credits=credits),
+    }
 
 
 def tool_quota_status(args: dict[str, Any]) -> dict[str, Any]:
@@ -1158,8 +1314,29 @@ def tool_quota_status(args: dict[str, Any]) -> dict[str, Any]:
         ordinary_allowed = rl_res.get("ordinaryUsageAllowed")
         is_unlimited = isinstance(credits, dict) and credits.get("unlimited") is True
         is_api_key = isinstance(acc, dict) and acc.get("type") == "apiKey"
+
         if primary is None and secondary is None and not (is_unlimited or is_api_key or ordinary_allowed is False):
-            raise RuntimeError("Both primary and secondary rate-limit windows are missing.")
+            fallback = _fallback_session_rate_limits()
+            if fallback:
+                fb_res = _build_session_fallback_quota(
+                    fallback, "Live rate-limit windows were missing."
+                )
+                if fb_res["recommendation"]["tier"] != "unknown":
+                    return fb_res
+            return {
+                "source": "codex-app-server-live",
+                "account": _mask_account(acc),
+                "ordinaryUsageAllowed": ordinary_allowed,
+                "primary5hWindow": None,
+                "secondary7dWindow": None,
+                "credits": credits,
+                "rateLimitResetCredits": rl_res.get("rateLimitResetCredits"),
+                "rateLimitReachedType": rl.get("rateLimitReachedType"),
+                "warning": "Rate-limit windows were missing from the live response.",
+                "recommendation": _compute_recommendation(
+                    ordinary_allowed, None, None, credits=credits, account=acc
+                ),
+            }
 
         return {
             "source": "codex-app-server-live",
@@ -1177,33 +1354,17 @@ def tool_quota_status(args: dict[str, Any]) -> dict[str, Any]:
     except Exception as exc:
         fallback = _fallback_session_rate_limits()
         if fallback:
-            rl = fallback["rateLimits"]
-            primary, secondary = _classify_windows(rl.get("primary"), rl.get("secondary"))
-            credits = rl.get("credits")
-            now_ts = time.time()
-            warning = f"Live app-server query failed: {exc}"
-            expired_windows = [
-                label
-                for label, win in (("primary 5h", primary), ("secondary 7d", secondary))
-                if win and isinstance(win.get("resetsAtEpoch"), (int, float)) and win["resetsAtEpoch"] <= now_ts
-            ]
-            if expired_windows:
-                warning += (
-                    f" Note: fallback {', '.join(expired_windows)} rate-limit window(s) "
-                    "already passed their reset timestamp and may be stale."
-                )
-            return {
-                "source": "session-fallback",
-                "sessionFile": fallback["source"],
-                "sampledAt": fallback["sampledAt"],
-                "staleMinutes": fallback["staleMinutes"],
-                "warning": warning,
-                "primary5hWindow": primary,
-                "secondary7dWindow": secondary,
-                "credits": credits,
-                "recommendation": _compute_recommendation(None, primary, secondary, credits=credits),
-            }
-        raise
+            return _build_session_fallback_quota(
+                fallback, f"Live app-server query failed: {exc}"
+            )
+        return {
+            "source": "quota-unavailable",
+            "warning": f"Live app-server query failed and no local session rate-limit fallback was found: {exc}",
+            "primary5hWindow": None,
+            "secondary7dWindow": None,
+            "credits": None,
+            "recommendation": _compute_recommendation(None, None, None),
+        }
 
 
 def tool_list_models(args: dict[str, Any]) -> dict[str, Any]:
@@ -1214,7 +1375,10 @@ def tool_list_models(args: dict[str, Any]) -> dict[str, Any]:
     try:
         all_models: list[dict[str, Any]] = []
         cursor: str | None = None
-        for _ in range(10):
+        seen_cursors: set[str] = set()
+        truncated_reason: str | None = None
+        max_pages = 50
+        for _ in range(max_pages):
             params: dict[str, Any] = {"includeHidden": include_hidden}
             if cursor:
                 params["cursor"] = cursor
@@ -1225,9 +1389,18 @@ def tool_list_models(args: dict[str, Any]) -> dict[str, Any]:
             if not isinstance(result, dict) or not isinstance(result.get("data"), list):
                 raise RuntimeError("Missing 'data' list in model/list response.")
             all_models.extend(result["data"])
-            cursor = result.get("nextCursor")
-            if not cursor:
+            next_cursor = result.get("nextCursor")
+            if not next_cursor:
+                cursor = None
                 break
+            if not isinstance(next_cursor, str) or next_cursor in seen_cursors:
+                truncated_reason = f"Stopped model/list pagination on repeated or invalid cursor {next_cursor!r}."
+                break
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
+        else:
+            if cursor:
+                truncated_reason = f"Stopped model/list pagination after reaching page cap ({max_pages})."
 
         if not include_hidden:
             all_models = [m for m in all_models if not m.get("hidden", False)]
@@ -1244,7 +1417,11 @@ def tool_list_models(args: dict[str, Any]) -> dict[str, Any]:
             }
             for m in all_models
         ]
-        return {"source": "codex-app-server-live", "models": simplified}
+        out: dict[str, Any] = {"source": "codex-app-server-live", "models": simplified}
+        if truncated_reason:
+            out["truncated"] = True
+            out["warning"] = truncated_reason
+        return out
     except Exception as exc:
         cache_path = os.path.join(_codex_home(), "models_cache.json")
         if os.path.exists(cache_path):
@@ -1275,9 +1452,10 @@ def tool_list_models(args: dict[str, Any]) -> dict[str, Any]:
 def _git_fingerprint(cwd: str | None) -> dict[str, Any] | None:
     if not cwd or not os.path.isdir(cwd):
         return None
+    git_base = ["git", "--no-pager", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=", "-C", cwd]
     try:
         head = subprocess.run(
-            ["git", "-C", cwd, "rev-parse", "HEAD"],
+            [*git_base, "rev-parse", "HEAD"],
             stdin=subprocess.DEVNULL,
             capture_output=True,
             timeout=3,
@@ -1285,25 +1463,78 @@ def _git_fingerprint(cwd: str | None) -> dict[str, Any] | None:
         if head.returncode != 0:
             return None
         status = subprocess.run(
-            ["git", "-C", cwd, "status", "--porcelain"],
+            [*git_base, "status", "--porcelain", "-z", "-uall"],
             stdin=subprocess.DEVNULL,
             capture_output=True,
             timeout=3,
         )
+        if status.returncode != 0:
+            return None
+        diff = subprocess.run(
+            [*git_base, "diff", "--no-ext-diff", "--no-textconv"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=3,
+        )
+        if diff.returncode != 0:
+            return None
+        cached_diff = subprocess.run(
+            [*git_base, "diff", "--cached", "--no-ext-diff", "--no-textconv"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=3,
+        )
+        if cached_diff.returncode != 0:
+            return None
+
         h = hashlib.sha256()
         h.update(status.stdout)
-        try:
-            diff = subprocess.run(
-                ["git", "-C", cwd, "diff", "--no-ext-diff"],
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                timeout=2,
-            )
-            if diff.returncode == 0:
-                h.update(b"\x00")
-                h.update(diff.stdout)
-        except Exception:
-            pass
+        h.update(b"\x00")
+        h.update(diff.stdout)
+        h.update(b"\x00")
+        h.update(cached_diff.stdout)
+
+        untracked_paths: list[bytes] = []
+        raw_entries = status.stdout.split(b"\x00")
+        idx = 0
+        while idx < len(raw_entries):
+            entry = raw_entries[idx]
+            idx += 1
+            if not entry:
+                continue
+            if entry.startswith(b"?? "):
+                untracked_paths.append(entry[3:])
+            elif len(entry) >= 2 and entry[0:1] in (b"R", b"C"):
+                # Skip rename/copy second path token
+                idx += 1
+
+        real_cwd = os.path.realpath(cwd)
+        for rel_b in sorted(untracked_paths)[:512]:
+            rel = _decode_bytes(rel_b)
+            h.update(b"\x01")
+            h.update(rel_b)
+            full_path = os.path.join(cwd, rel)
+            try:
+                real_full = os.path.realpath(full_path)
+                if os.path.commonpath([real_cwd, real_full]) != real_cwd:
+                    h.update(b":outside")
+                    continue
+                if os.path.islink(full_path):
+                    h.update(b":symlink")
+                    continue
+                st = os.stat(full_path)
+                if not os.path.isfile(full_path):
+                    h.update(b":nonfile")
+                    continue
+                h.update(f":{st.st_size}:".encode("ascii"))
+                if st.st_size <= 1_048_576:
+                    with open(full_path, "rb") as uf:
+                        h.update(uf.read())
+                else:
+                    h.update(f"{st.st_mtime_ns}".encode("ascii"))
+            except OSError:
+                h.update(b":missing")
+
         return {
             "head": _decode_bytes(head.stdout).strip(),
             "statusHash": h.hexdigest(),
@@ -1360,6 +1591,8 @@ def _run_codex_exec(
     job_record: dict[str, Any] | None = None,
     cancel_event: threading.Event | None = None,
     session_meta: dict[str, Any] | None = None,
+    env: dict[str, str] | None = None,
+    existing_session_id: str | None = None,
 ) -> dict[str, Any]:
     with tempfile.NamedTemporaryFile(
         prefix="codex-last-", suffix=".txt", delete=False
@@ -1368,6 +1601,13 @@ def _run_codex_exec(
 
     job_obj = _WinJobObject()
     proc: subprocess.Popen[bytes] | None = None
+    io_lock = threading.Lock()
+    new_session_lock_guard = threading.Lock()
+    run_finished = False
+    claiming_new_session = False
+    owned_new_session_id: str | None = None
+    owned_new_session_lock: threading.Lock | None = None
+
     try:
         full_cmd = [*cmd, "-o", out_file, "--json"]
         if include_color:
@@ -1375,7 +1615,10 @@ def _run_codex_exec(
         if prompt is not None:
             full_cmd.append("-")
 
-        _, env = _resolve_codex_command()
+        if env is None:
+            _, env = _resolve_codex_argv()
+        _guard_win_batch_argv(full_cmd)
+
         if job_record is not None:
             with JOBS_LOCK:
                 if job_record["status"] == "cancelling":
@@ -1425,7 +1668,8 @@ def _run_codex_exec(
                     pass
 
         def _read_stdout() -> None:
-            nonlocal usage, rate_limits, thread_id
+            nonlocal usage, rate_limits, thread_id, claiming_new_session
+            nonlocal owned_new_session_id, owned_new_session_lock
             assert proc is not None and proc.stdout is not None
             while True:
                 raw = proc.stdout.readline()
@@ -1443,33 +1687,66 @@ def _run_codex_exec(
                     with JOBS_LOCK:
                         job_record["lastActivityAt"] = time.time()
                 if ev_type == "thread.started" and ev.get("thread_id"):
-                    thread_id = ev["thread_id"]
+                    tid = ev["thread_id"]
+                    thread_id = tid
                     if session_meta is not None:
+                        if tid != existing_session_id:
+                            need_claim = False
+                            with new_session_lock_guard:
+                                if not run_finished and owned_new_session_id is None and not claiming_new_session:
+                                    claiming_new_session = True
+                                    need_claim = True
+                            if need_claim:
+                                lk = _acquire_session_lock_ref(tid)
+                                lk.acquire()
+                                released_early = False
+                                with new_session_lock_guard:
+                                    claiming_new_session = False
+                                    if run_finished:
+                                        released_early = True
+                                    else:
+                                        owned_new_session_id = tid
+                                        owned_new_session_lock = lk
+                                if released_early:
+                                    lk.release()
+                                    _release_session_lock_ref(tid)
                         with SESSIONS_LOCK:
                             now_ts = time.time()
-                            existing = SESSION_BINDINGS.get(thread_id)
+                            existing = SESSION_BINDINGS.get(tid)
                             entry = dict(session_meta)
-                            entry["createdAt"] = existing.get("createdAt", now_ts) if existing else now_ts
+                            if existing:
+                                entry["createdAt"] = existing.get("createdAt", now_ts)
+                                if entry.get("model") is None and existing.get("model") is not None:
+                                    entry["model"] = existing["model"]
+                                old_sb = existing.get("sandbox")
+                                new_sb = entry.get("sandbox")
+                                if old_sb and _SANDBOX_RANK.get(old_sb, 0) > _SANDBOX_RANK.get(new_sb or "read-only", 0):
+                                    entry["sandbox"] = old_sb
+                            else:
+                                entry["createdAt"] = now_ts
                             entry["lastUsedAt"] = now_ts
-                            SESSION_BINDINGS[thread_id] = entry
+                            SESSION_BINDINGS[tid] = entry
                             _prune_sessions_unlocked()
                     if job_record is not None:
                         with JOBS_LOCK:
-                            job_record["sessionId"] = thread_id
+                            job_record["sessionId"] = tid
                 elif ev_type == "turn.completed" and "usage" in ev:
                     usage = ev["usage"]
                 elif ev_type == "item.completed":
                     item = ev.get("item", {})
                     if item.get("type") == "agent_message" and item.get("text"):
-                        agent_messages.append(item["text"])
+                        with io_lock:
+                            agent_messages.append(item["text"])
+                            msg_count = len(agent_messages)
                         if job_record is not None:
                             with JOBS_LOCK:
-                                job_record["agentMessagesCount"] = len(agent_messages)
+                                job_record["agentMessagesCount"] = msg_count
                                 job_record["lastMessagePreview"] = item["text"][:200]
                     else:
                         summary, is_tool = _summarize_activity_item(item)
                         if summary is not None:
-                            activity_log.append(summary)
+                            with io_lock:
+                                activity_log.append(summary)
                         if is_tool and job_record is not None:
                             with JOBS_LOCK:
                                 job_record["toolCallsCount"] = job_record.get("toolCallsCount", 0) + 1
@@ -1488,23 +1765,24 @@ def _run_codex_exec(
                 chunk = proc.stderr.read(4096)
                 if not chunk:
                     break
-                if len(chunk) >= MAX_STDERR_BYTES:
-                    stderr_chunks.clear()
-                    stderr_chunks.append(chunk[-MAX_STDERR_BYTES:])
-                    stderr_bytes = MAX_STDERR_BYTES
-                    continue
-                stderr_chunks.append(chunk)
-                stderr_bytes += len(chunk)
-                while stderr_bytes > MAX_STDERR_BYTES and stderr_chunks:
-                    excess = stderr_bytes - MAX_STDERR_BYTES
-                    oldest = stderr_chunks[0]
-                    if len(oldest) <= excess:
-                        stderr_chunks.popleft()
-                        stderr_bytes -= len(oldest)
-                    else:
-                        stderr_chunks[0] = oldest[excess:]
-                        stderr_bytes -= excess
-                        break
+                with io_lock:
+                    if len(chunk) >= MAX_STDERR_BYTES:
+                        stderr_chunks.clear()
+                        stderr_chunks.append(chunk[-MAX_STDERR_BYTES:])
+                        stderr_bytes = MAX_STDERR_BYTES
+                        continue
+                    stderr_chunks.append(chunk)
+                    stderr_bytes += len(chunk)
+                    while stderr_bytes > MAX_STDERR_BYTES and stderr_chunks:
+                        excess = stderr_bytes - MAX_STDERR_BYTES
+                        oldest = stderr_chunks[0]
+                        if len(oldest) <= excess:
+                            stderr_chunks.popleft()
+                            stderr_bytes -= len(oldest)
+                        else:
+                            stderr_chunks[0] = oldest[excess:]
+                            stderr_bytes -= excess
+                            break
 
         t_in = threading.Thread(target=_write_stdin, daemon=True)
         t_out = threading.Thread(target=_read_stdout, daemon=True)
@@ -1518,9 +1796,11 @@ def _run_codex_exec(
             if cancel_event is not None and cancel_event.is_set():
                 cancelled = True
                 break
-            if job_record is not None and job_record["status"] == "cancelling":
-                cancelled = True
-                break
+            if job_record is not None:
+                with JOBS_LOCK:
+                    if job_record["status"] == "cancelling":
+                        cancelled = True
+                        break
             if deadline is not None:
                 rem = deadline - time.monotonic()
                 if rem <= 0:
@@ -1539,15 +1819,19 @@ def _run_codex_exec(
         t_out.join(timeout=2.0)
         t_err.join(timeout=1.0)
 
-        stderr_text = _filter_stderr_noise(_decode_bytes(b"".join(stderr_chunks)))
+        with io_lock:
+            raw_stderr = b"".join(stderr_chunks)
+            captured_messages = list(agent_messages)
+            captured_activity = list(activity_log)
+        stderr_text = _filter_stderr_noise(_decode_bytes(raw_stderr))
 
         last_message = ""
         if os.path.exists(out_file):
             with open(out_file, "rb") as f:
                 last_message = _decode_bytes(f.read()).strip()
 
-        if not last_message and agent_messages:
-            last_message = "\n\n".join(agent_messages)
+        if not last_message and captured_messages:
+            last_message = "\n\n".join(captured_messages)
 
         exit_code = -2 if cancelled else (-1 if timed_out else (proc.returncode if proc.returncode is not None else 1))
         result: dict[str, Any] = {
@@ -1573,10 +1857,10 @@ def _run_codex_exec(
                 f"Codex exec {reason}. All captured messages (`agentMessages`) and recent "
                 f"tool activity (`activityLog`) are included below.{resume_hint}"
             )
-        if (timed_out or cancelled or exit_code != 0) and agent_messages:
-            result["agentMessages"] = list(agent_messages)
-        if (timed_out or cancelled or exit_code != 0) and activity_log:
-            result["activityLog"] = list(activity_log)
+        if (timed_out or cancelled or exit_code != 0) and captured_messages:
+            result["agentMessages"] = captured_messages
+        if (timed_out or cancelled or exit_code != 0) and captured_activity:
+            result["activityLog"] = captured_activity
         if _has_nonzero_usage(usage):
             result["usage"] = usage
         else:
@@ -1590,6 +1874,18 @@ def _run_codex_exec(
             result["stderr"] = stderr_text[-3000:]
         return result
     finally:
+        rel_sid = None
+        rel_lock = None
+        with new_session_lock_guard:
+            run_finished = True
+            rel_sid = owned_new_session_id
+            rel_lock = owned_new_session_lock
+            owned_new_session_id = None
+            owned_new_session_lock = None
+        if rel_lock is not None:
+            rel_lock.release()
+        if rel_sid is not None:
+            _release_session_lock_ref(rel_sid)
         if proc is not None and proc.poll() is None:
             _terminate_process_tree(proc, job_obj)
         else:
@@ -1605,7 +1901,7 @@ def _prune_finished_jobs_unlocked() -> None:
     to_delete: list[str] = []
     finished: list[tuple[float, str]] = []
     for jid, job in JOBS.items():
-        if job["status"] in ("completed", "failed", "timed_out", "cancelled"):
+        if job["status"] in _TERMINAL_JOB_STATUSES:
             fin = job["finishedAt"] or now
             if now - fin > FINISHED_JOB_TTL_SECONDS:
                 to_delete.append(jid)
@@ -1633,13 +1929,45 @@ def _launch_background_job(
     session_meta: dict[str, Any] | None = None,
     start_fingerprint: dict[str, Any] | None = None,
     cwd: str | None = None,
+    cancel_event: threading.Event | None = None,
+    env: dict[str, str] | None = None,
+    resume_check: tuple[str, str | None, str | None, str] | None = None,
 ) -> dict[str, Any]:
+    req_fingerprint = hashlib.sha256(
+        json.dumps(
+            {
+                "kind": kind,
+                "cmd": cmd,
+                "prompt": prompt,
+                "timeoutSeconds": timeout_seconds,
+                "meta": meta,
+            },
+            sort_keys=True,
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()
+
     with JOBS_LOCK:
         _prune_finished_jobs_unlocked()
+        if SHUTDOWN_EVENT.is_set():
+            raise RuntimeError("Server is shutting down; refusing new background job.")
+        if cancel_event is not None and cancel_event.is_set():
+            return {
+                "status": "cancelled",
+                "cancelled": True,
+                "kind": kind,
+                "timeoutSeconds": timeout_seconds,
+                **meta,
+            }
         if request_id and request_id in REQUEST_ID_TO_JOB:
             existing_id = REQUEST_ID_TO_JOB[request_id]
             existing = JOBS.get(existing_id)
             if existing is not None:
+                if existing.get("requestFingerprint") != req_fingerprint:
+                    raise ValueError(
+                        f"request_id '{request_id}' was already used for a different request "
+                        f"(existing jobId: {existing_id}). Use a new request_id for a different task."
+                    )
                 return {
                     **_serialize_job(existing, include_result=(existing["status"] != "running")),
                     "deduplicated": True,
@@ -1657,6 +1985,7 @@ def _launch_background_job(
         job_record: dict[str, Any] = {
             "jobId": job_id,
             "requestId": request_id,
+            "requestFingerprint": req_fingerprint,
             "kind": kind,
             "status": "queued",
             "startedAt": now_ts,
@@ -1720,6 +2049,21 @@ def _launch_background_job(
                         if job_record["finishedAt"] is None:
                             job_record["finishedAt"] = time.time()
                         return
+                if resume_check is not None:
+                    r_sid, r_req_cwd, r_sb_arg, r_built_sb = resume_check
+                    checked_cwd, checked_sb = _validate_session_binding(r_sid, r_req_cwd, r_sb_arg)
+                    built_cwd = meta.get("cwd")
+                    cwd_ok = (
+                        (checked_cwd == built_cwd)
+                        if (checked_cwd is None or built_cwd is None)
+                        else (_canonical_cwd(checked_cwd) == _canonical_cwd(built_cwd))
+                    )
+                    if not cwd_ok or checked_sb != r_built_sb:
+                        raise ValueError(
+                            f"Session {r_sid} binding changed while waiting in queue "
+                            f"(expected sandbox={r_built_sb}, cwd={built_cwd}; current "
+                            f"sandbox={checked_sb}, cwd={checked_cwd}). Retry the resume."
+                        )
 
             res = _run_codex_exec(
                 cmd,
@@ -1728,6 +2072,8 @@ def _launch_background_job(
                 include_color=include_color,
                 job_record=job_record,
                 session_meta=session_meta,
+                env=env,
+                existing_session_id=session_id,
             )
             res.update(meta)
             if start_fingerprint is not None and cwd:
@@ -1740,24 +2086,28 @@ def _launch_background_job(
                     )
 
             with JOBS_LOCK:
-                if job_record["status"] == "cancelling" or res.get("cancelled"):
-                    job_record["status"] = "cancelled"
-                elif res.get("timedOut"):
-                    job_record["status"] = "timed_out"
-                elif res.get("exitCode", 0) != 0:
-                    job_record["status"] = "failed"
-                else:
-                    job_record["status"] = "completed"
+                if job_record["status"] not in _TERMINAL_JOB_STATUSES:
+                    if job_record["status"] == "cancelling" or res.get("cancelled"):
+                        job_record["status"] = "cancelled"
+                    elif res.get("timedOut"):
+                        job_record["status"] = "timed_out"
+                    elif res.get("exitCode", 0) != 0:
+                        job_record["status"] = "failed"
+                    else:
+                        job_record["status"] = "completed"
                 job_record["result"] = res
-                job_record["finishedAt"] = time.time()
+                if job_record["finishedAt"] is None:
+                    job_record["finishedAt"] = time.time()
         except Exception as exc:
             with JOBS_LOCK:
-                if job_record["status"] == "cancelling":
-                    job_record["status"] = "cancelled"
-                else:
-                    job_record["status"] = "failed"
+                if job_record["status"] not in _TERMINAL_JOB_STATUSES:
+                    if job_record["status"] == "cancelling":
+                        job_record["status"] = "cancelled"
+                    else:
+                        job_record["status"] = "failed"
                 job_record["error"] = str(exc)
-                job_record["finishedAt"] = time.time()
+                if job_record["finishedAt"] is None:
+                    job_record["finishedAt"] = time.time()
         finally:
             if session_acquired and session_lock is not None:
                 session_lock.release()
@@ -1786,8 +2136,8 @@ def _launch_background_job(
         **meta,
         "note": (
             "Job queued/started in background. Poll codex_job_status(job_id=..., "
-            "wait_seconds=20-45 on 30-60s hosts or 90-120 on 180s+ hosts) or omit "
-            "job_id with include_results=true to monitor multiple jobs."
+            "wait_seconds=20 on 30s hosts, 30-45 on 60s hosts, or 90-120 on 180s+ hosts) "
+            "or omit job_id with include_results=true to monitor multiple jobs."
         ),
     }
 
@@ -1892,21 +2242,31 @@ def tool_job_cancel(args: dict[str, Any]) -> dict[str, Any]:
     job_id = args.get("job_id")
     if not isinstance(job_id, str) or not job_id.strip():
         raise ValueError("'job_id' is required and must be a non-empty string.")
+    wait_ev: threading.Event | None = None
+    proc = None
+    job_obj = None
     with JOBS_LOCK:
         job = JOBS.get(job_id.strip())
         if not job:
             raise ValueError(f"Unknown job_id: {job_id}")
         if job["doneEvent"].is_set():
             return _serialize_job(job, include_result=True)
-        if job["status"] == "queued":
+        if job["status"] in _TERMINAL_JOB_STATUSES:
+            wait_ev = job["doneEvent"]
+        elif job["status"] == "queued":
             job["status"] = "cancelled"
             if job["finishedAt"] is None:
                 job["finishedAt"] = time.time()
             job["doneEvent"].set()
             return _serialize_job(job, include_result=True)
-        job["status"] = "cancelling"
-        proc = job.get("proc")
-        job_obj = job.get("jobObj")
+        else:
+            job["status"] = "cancelling"
+            proc = job.get("proc")
+            job_obj = job.get("jobObj")
+    if wait_ev is not None:
+        wait_ev.wait(timeout=5.0)
+        with JOBS_LOCK:
+            return _serialize_job(job, include_result=True)
     if proc is not None:
         _terminate_process_tree(proc, job_obj)
     job["doneEvent"].wait(timeout=5.0)
@@ -1927,9 +2287,7 @@ def tool_exec(args: dict[str, Any], cancel_event: threading.Event | None = None)
 
     model_arg = args.get("model")
     if model_arg is not None:
-        if not isinstance(model_arg, str) or not model_arg.strip():
-            raise ValueError("'model' must be a non-empty string.")
-        model: str | None = model_arg.strip()
+        model: str | None = _validate_cli_token(model_arg, "model")
     else:
         model = None if profile else _default_model()
 
@@ -1937,17 +2295,16 @@ def tool_exec(args: dict[str, Any], cancel_event: threading.Event | None = None)
     if reasoning_effort is not None and reasoning_effort not in VALID_REASONING_EFFORTS:
         raise ValueError(f"'reasoning_effort' must be one of {VALID_REASONING_EFFORTS}.")
 
-    cwd = _validate_cwd(args.get("cwd"), required=False)
+    requested_cwd = _validate_cwd(args.get("cwd"), required=False)
 
     sandbox_arg = args.get("sandbox")
     if sandbox_arg is not None and sandbox_arg not in VALID_SANDBOXES:
         raise ValueError(f"'sandbox' must be one of {VALID_SANDBOXES}.")
 
-    session_id = args.get("session_id")
-    if session_id is not None:
-        if not isinstance(session_id, str) or not session_id.strip():
-            raise ValueError("'session_id' must be a non-empty string.")
-        session_id = session_id.strip()
+    session_id_arg = args.get("session_id")
+    session_id: str | None = None
+    if session_id_arg is not None:
+        session_id = _validate_cli_token(session_id_arg, "session_id")
 
     background = _as_bool(args.get("background"), False, "background")
     ephemeral = _as_bool(args.get("ephemeral"), False if (session_id or background) else True, "ephemeral")
@@ -1961,30 +2318,20 @@ def tool_exec(args: dict[str, Any], cancel_event: threading.Event | None = None)
         request_id = request_id.strip()
 
     # Validate session bindings on resume so cwd/sandbox constraints cannot be silently violated
-    sandbox = sandbox_arg or "read-only"
-    bound_info: dict[str, Any] | None = None
     if session_id:
-        with SESSIONS_LOCK:
-            bound_info = SESSION_BINDINGS.get(session_id)
-        if bound_info is not None:
-            if cwd and bound_info.get("cwd") and os.path.normcase(cwd) != os.path.normcase(bound_info["cwd"]):
-                raise ValueError(
-                    f"Session {session_id} is bound to cwd '{bound_info['cwd']}', cannot resume with '{cwd}'."
-                )
-            cwd = cwd or bound_info.get("cwd")
-            if sandbox_arg is None and bound_info.get("sandbox"):
-                sandbox = bound_info["sandbox"]
-            elif sandbox == "read-only" and bound_info.get("sandbox") and bound_info["sandbox"] != "read-only":
-                raise ValueError(
-                    f"Refusing 'read-only' resume on session {session_id} which was created with "
-                    f"sandbox '{bound_info['sandbox']}'."
-                )
-        elif sandbox_arg is None:
-            sandbox = "read-only"
+        cwd, sandbox = _validate_session_binding(session_id, requested_cwd, sandbox_arg)
+    else:
+        cwd = requested_cwd
+        sandbox = sandbox_arg or "read-only"
 
-    codex_bin, _ = _resolve_codex_command()
+    if sandbox != "read-only" and cwd is None:
+        raise ValueError(
+            f"'cwd' is required when sandbox is '{sandbox}'. Pass an explicit absolute project directory path."
+        )
+
+    codex_argv, env = _resolve_codex_argv()
     # Parent flags (-C, -s, --color, -p) must precede subcommand (`resume`) if used
-    cmd = [codex_bin, "exec"]
+    cmd = [*codex_argv, "exec"]
     if cwd:
         cmd.extend(["-C", cwd])
     cmd.extend(["-s", sandbox, "--color", "never"])
@@ -2016,7 +2363,8 @@ def tool_exec(args: dict[str, Any], cancel_event: threading.Event | None = None)
         if skip_git_check:
             cmd.append("--skip-git-repo-check")
 
-    session_meta = None if ephemeral else {"cwd": cwd, "sandbox": sandbox, "model": model}
+    bound_cwd = cwd or os.path.abspath(os.getcwd())
+    session_meta = None if ephemeral else {"cwd": bound_cwd, "sandbox": sandbox, "model": model}
     meta: dict[str, Any] = {
         "model": model,
         "reasoningEffort": reasoning_effort,
@@ -2041,6 +2389,9 @@ def tool_exec(args: dict[str, Any], cancel_event: threading.Event | None = None)
             request_id=request_id,
             session_id=session_id,
             session_meta=session_meta,
+            cancel_event=cancel_event,
+            env=env,
+            resume_check=((session_id, requested_cwd, sandbox_arg, sandbox) if session_id else None),
         )
 
     session_lock = None
@@ -2062,6 +2413,18 @@ def tool_exec(args: dict[str, Any], cancel_event: threading.Event | None = None)
                 }
         session_acquired = True
     try:
+        if session_id:
+            checked_cwd, checked_sb = _validate_session_binding(session_id, requested_cwd, sandbox_arg)
+            cwd_ok = (
+                (checked_cwd == cwd)
+                if (checked_cwd is None or cwd is None)
+                else (_canonical_cwd(checked_cwd) == _canonical_cwd(cwd))
+            )
+            if not cwd_ok or checked_sb != sandbox:
+                raise ValueError(
+                    f"Session {session_id} binding changed while waiting for session lock "
+                    f"(expected sandbox={sandbox}, cwd={cwd}; current sandbox={checked_sb}, cwd={checked_cwd})."
+                )
         res = _run_codex_exec(
             cmd,
             prompt=prompt,
@@ -2069,6 +2432,8 @@ def tool_exec(args: dict[str, Any], cancel_event: threading.Event | None = None)
             include_color=False,  # already placed before subcommand
             cancel_event=cancel_event,
             session_meta=session_meta,
+            env=env,
+            existing_session_id=session_id,
         )
     finally:
         if session_acquired and session_lock is not None:
@@ -2091,9 +2456,7 @@ def tool_review(args: dict[str, Any], cancel_event: threading.Event | None = Non
 
     model_arg = args.get("model")
     if model_arg is not None:
-        if not isinstance(model_arg, str) or not model_arg.strip():
-            raise ValueError("'model' must be a non-empty string.")
-        model: str | None = model_arg.strip()
+        model: str | None = _validate_cli_token(model_arg, "model")
     else:
         model = None if profile else _default_model()
 
@@ -2105,15 +2468,11 @@ def tool_review(args: dict[str, Any], cancel_event: threading.Event | None = Non
     else:
         reasoning_effort = None if profile else "medium"
 
-    base = args.get("base")
-    if base is not None and (not isinstance(base, str) or not base.strip()):
-        raise ValueError("'base' must be a non-empty branch/ref string.")
-    base = base.strip() if isinstance(base, str) else None
+    base_arg = args.get("base")
+    base = _validate_cli_token(base_arg, "base") if base_arg is not None else None
 
-    commit = args.get("commit")
-    if commit is not None and (not isinstance(commit, str) or not commit.strip()):
-        raise ValueError("'commit' must be a non-empty commit SHA/ref string.")
-    commit = commit.strip() if isinstance(commit, str) else None
+    commit_arg = args.get("commit")
+    commit = _validate_cli_token(commit_arg, "commit") if commit_arg is not None else None
 
     if base and commit:
         raise ValueError("'base' and 'commit' are mutually exclusive.")
@@ -2140,7 +2499,7 @@ def tool_review(args: dict[str, Any], cancel_event: threading.Event | None = Non
             raise ValueError("'request_id' must be a non-empty string.")
         request_id = request_id.strip()
 
-    codex_bin, _ = _resolve_codex_command()
+    codex_argv, env = _resolve_codex_argv()
 
     # `codex exec review` forbids combining [PROMPT] (`focus`) with `--uncommitted`/`--base`/`--commit`.
     # When `focus` is combined with a diff scope, route through `codex exec -C <cwd> -s read-only`.
@@ -2153,7 +2512,7 @@ def tool_review(args: dict[str, Any], cancel_event: threading.Event | None = Non
             scope_desc = "all uncommitted changes (`git status`, `git diff`, and untracked files)"
         review_mode = "focused-readonly-exec"
         cmd = [
-            codex_bin, "exec", "-C", cwd, "-s", "read-only", "--color", "never",
+            *codex_argv, "exec", "-C", cwd, "-s", "read-only", "--color", "never",
         ]
         if profile:
             cmd.extend(["-p", profile])
@@ -2170,7 +2529,7 @@ def tool_review(args: dict[str, Any], cancel_event: threading.Event | None = Non
     else:
         review_mode = "cli-review"
         cmd = [
-            codex_bin, "exec", "-C", cwd, "-s", "read-only", "--color", "never",
+            *codex_argv, "exec", "-C", cwd, "-s", "read-only", "--color", "never",
         ]
         if profile:
             cmd.extend(["-p", profile])
@@ -2215,6 +2574,8 @@ def tool_review(args: dict[str, Any], cancel_event: threading.Event | None = Non
             request_id=request_id,
             start_fingerprint=start_fp,
             cwd=cwd,
+            cancel_event=cancel_event,
+            env=env,
         )
 
     res = _run_codex_exec(
@@ -2223,6 +2584,7 @@ def tool_review(args: dict[str, Any], cancel_event: threading.Event | None = Non
         timeout_seconds=timeout_seconds,
         include_color=False,
         cancel_event=cancel_event,
+        env=env,
     )
     if start_fp is not None:
         end_fp = _git_fingerprint(cwd)
@@ -2300,7 +2662,10 @@ TOOLS: list[dict[str, Any]] = [
                 },
                 "cwd": {
                     "type": "string",
-                    "description": "Working directory for Codex (-C). Validated to exist before running.",
+                    "description": (
+                        "Working directory for Codex (-C). Recommended for file inspection "
+                        "(omitting inherits the server cwd) and required for writable sandboxes."
+                    ),
                 },
                 "sandbox": {
                     "type": "string",
@@ -2433,8 +2798,8 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "number",
                     "description": (
                         "Seconds (0-120) to wait for completion before returning early if done. "
-                        "Keep below your MCP host's call timeout (90-120s for 180s+ hosts on heavy "
-                        "runs; 20-45s on 30-60s hosts or light runs)."
+                        "Keep below your MCP host's call timeout (~20s on 30s hosts, 30-45s on "
+                        "60s hosts, or 90-120s on 180s+ hosts for heavy runs)."
                     ),
                 },
                 "include_results": {
@@ -2463,14 +2828,29 @@ TOOLS: list[dict[str, Any]] = [
 ]
 
 
-def _send(obj: dict[str, Any]) -> None:
-    line = json.dumps(obj, ensure_ascii=False) + "\n"
+TOOL_ALLOWED_ARGS: dict[str, frozenset[str]] = {
+    t["name"]: frozenset(t["inputSchema"].get("properties", {}).keys())
+    for t in TOOLS
+}
+
+
+def _send_raw(payload: Any) -> None:
+    line = json.dumps(payload, ensure_ascii=False) + "\n"
     with SEND_LOCK:
         sys.stdout.write(line)
         sys.stdout.flush()
 
 
+def _send(obj: dict[str, Any]) -> None:
+    _send_raw(obj)
+
+
 def _dispatch_tool(name: str, args: dict[str, Any], cancel_event: threading.Event) -> tuple[dict[str, Any], bool]:
+    allowed = TOOL_ALLOWED_ARGS.get(name)
+    if allowed is not None:
+        unknown = sorted(set(args.keys()) - allowed)
+        if unknown:
+            raise ValueError(f"Unknown argument(s) for '{name}': {', '.join(unknown)}")
     if name == "codex_quota_status":
         return tool_quota_status(args), False
     if name == "codex_list_models":
@@ -2490,16 +2870,23 @@ def _dispatch_tool(name: str, args: dict[str, Any], cancel_event: threading.Even
     raise KeyError(f"Unknown tool: {name}")
 
 
-def _handle_request(msg: dict[str, Any], cancel_event: threading.Event) -> None:
+def _handle_request(
+    msg: dict[str, Any],
+    cancel_event: threading.Event,
+    send_fn: Any = None,
+) -> None:
+    global NEGOTIATED_PROTOCOL_VERSION
+    emit = send_fn or _send
     method = msg.get("method")
+    has_id = "id" in msg
     msg_id = msg.get("id")
     params = msg.get("params")
     try:
         if params is None:
             params = {}
         if not isinstance(params, dict):
-            if msg_id is not None:
-                _send({"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32602, "message": "params must be an object"}})
+            if has_id:
+                emit({"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32602, "message": "params must be an object"}})
             return
         if method == "initialize":
             req_ver = params.get("protocolVersion")
@@ -2508,48 +2895,57 @@ def _handle_request(msg: dict[str, Any], cancel_event: threading.Event) -> None:
                 if isinstance(req_ver, str) and req_ver in SUPPORTED_PROTOCOL_VERSIONS
                 else PROTOCOL_VERSION
             )
-            _send({
-                "jsonrpc": "2.0",
-                "id": msg_id,
-                "result": {
-                    "protocolVersion": negotiated_ver,
-                    "capabilities": {"tools": {}},
-                    "serverInfo": SERVER_INFO,
-                },
-            })
+            NEGOTIATED_PROTOCOL_VERSION = negotiated_ver
+            if has_id:
+                emit({
+                    "jsonrpc": "2.0",
+                    "id": msg_id,
+                    "result": {
+                        "protocolVersion": negotiated_ver,
+                        "capabilities": {"tools": {}},
+                        "serverInfo": SERVER_INFO,
+                    },
+                })
             return
 
         if method == "ping":
-            _send({"jsonrpc": "2.0", "id": msg_id, "result": {}})
+            if has_id:
+                emit({"jsonrpc": "2.0", "id": msg_id, "result": {}})
             return
 
         if method == "tools/list":
-            _send({"jsonrpc": "2.0", "id": msg_id, "result": {"tools": TOOLS}})
+            if has_id:
+                emit({"jsonrpc": "2.0", "id": msg_id, "result": {"tools": TOOLS}})
             return
 
         if method == "resources/list":
-            _send({"jsonrpc": "2.0", "id": msg_id, "result": {"resources": []}})
+            if has_id:
+                emit({"jsonrpc": "2.0", "id": msg_id, "result": {"resources": []}})
             return
 
         if method == "resources/templates/list":
-            _send({"jsonrpc": "2.0", "id": msg_id, "result": {"resourceTemplates": []}})
+            if has_id:
+                emit({"jsonrpc": "2.0", "id": msg_id, "result": {"resourceTemplates": []}})
             return
 
         if method == "prompts/list":
-            _send({"jsonrpc": "2.0", "id": msg_id, "result": {"prompts": []}})
+            if has_id:
+                emit({"jsonrpc": "2.0", "id": msg_id, "result": {"prompts": []}})
             return
 
         if method == "tools/call":
+            if not has_id:
+                return
             name = params.get("name")
             if "arguments" not in params:
                 args: Any = {}
             else:
                 args = params.get("arguments")
             if not isinstance(name, str):
-                _send({"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32602, "message": "Tool name must be a string"}})
+                emit({"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32602, "message": "Tool name must be a string"}})
                 return
             if not isinstance(args, dict):
-                _send({"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32602, "message": "'arguments' must be an object"}})
+                emit({"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32602, "message": "'arguments' must be an object"}})
                 return
             t0 = time.monotonic()
             try:
@@ -2560,7 +2956,7 @@ def _handle_request(msg: dict[str, Any], cancel_event: threading.Event) -> None:
                     durationMs=round((time.monotonic() - t0) * 1000, 1),
                     isError=is_err,
                 )
-                _send({
+                emit({
                     "jsonrpc": "2.0",
                     "id": msg_id,
                     "result": {
@@ -2576,7 +2972,7 @@ def _handle_request(msg: dict[str, Any], cancel_event: threading.Event) -> None:
                     isError=True,
                     errorType="UnknownTool",
                 )
-                _send({"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32601, "message": f"Unknown tool: {name}"}})
+                emit({"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32601, "message": f"Unknown tool: {name}"}})
             except Exception as exc:
                 _log_event(
                     "tool_call",
@@ -2586,7 +2982,7 @@ def _handle_request(msg: dict[str, Any], cancel_event: threading.Event) -> None:
                     errorType=type(exc).__name__,
                 )
                 err_payload = {"error": {"code": type(exc).__name__, "message": str(exc)}}
-                _send({
+                emit({
                     "jsonrpc": "2.0",
                     "id": msg_id,
                     "result": {
@@ -2596,17 +2992,64 @@ def _handle_request(msg: dict[str, Any], cancel_event: threading.Event) -> None:
                 })
             return
 
-        if msg_id is not None:
-            _send({"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32601, "message": f"Method not found: {method}"}})
+        if has_id:
+            emit({"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32601, "message": f"Method not found: {method}"}})
     finally:
-        if msg_id is not None:
+        if has_id and msg_id is not None:
             with CANCEL_LOCK:
-                CANCEL_EVENTS.pop(msg_id, None)
+                if CANCEL_EVENTS.get(msg_id) is cancel_event:
+                    CANCEL_EVENTS.pop(msg_id, None)
+                REQUEST_FUTURES.pop(msg_id, None)
 
 
 def _is_valid_jsonrpc_id(val: Any) -> bool:
     """Return True if val is a valid hashable JSON-RPC 2.0 request id (str or non-bool int)."""
     return isinstance(val, (str, int)) and not isinstance(val, bool)
+
+
+def _validate_envelope_error(msg: Any) -> dict[str, Any] | None:
+    """Return a JSON-RPC 2.0 error response if msg is not a valid request/notification envelope."""
+    if not isinstance(msg, dict):
+        return {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "Invalid Request: expected JSON object"}}
+    has_id = "id" in msg
+    msg_id = msg.get("id")
+    if has_id and not _is_valid_jsonrpc_id(msg_id):
+        return {
+            "jsonrpc": "2.0",
+            "id": None,
+            "error": {"code": -32600, "message": "Invalid Request: 'id' must be a string or integer"},
+        }
+    reply_id = msg_id if has_id else None
+    if msg.get("jsonrpc") != "2.0":
+        return {
+            "jsonrpc": "2.0",
+            "id": reply_id,
+            "error": {"code": -32600, "message": "Invalid Request: 'jsonrpc' must be '2.0'"},
+        }
+    method = msg.get("method")
+    if not isinstance(method, str) or not method:
+        return {
+            "jsonrpc": "2.0",
+            "id": reply_id,
+            "error": {"code": -32600, "message": "Invalid Request: 'method' must be a non-empty string"},
+        }
+    return None
+
+
+def _cancel_inflight_request(msg: dict[str, Any]) -> None:
+    params = msg.get("params") or {}
+    if isinstance(params, dict) and "requestId" in params:
+        target_id = params["requestId"]
+        if _is_valid_jsonrpc_id(target_id):
+            with CANCEL_LOCK:
+                ev = CANCEL_EVENTS.get(target_id)
+                fut = REQUEST_FUTURES.get(target_id)
+                if ev is not None:
+                    ev.set()
+                if fut is not None and fut.cancel():
+                    if CANCEL_EVENTS.get(target_id) is ev:
+                        CANCEL_EVENTS.pop(target_id, None)
+                    REQUEST_FUTURES.pop(target_id, None)
 
 
 def main() -> None:
@@ -2623,45 +3066,52 @@ def main() -> None:
             except (json.JSONDecodeError, ValueError) as exc:
                 _send({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": f"Parse error: {exc}"}})
                 continue
-            if not isinstance(msg, dict):
-                _send({"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "Invalid Request: expected JSON object"}})
+
+            if isinstance(msg, list):
+                if len(msg) == 0 or NEGOTIATED_PROTOCOL_VERSION != "2025-03-26":
+                    _send({
+                        "jsonrpc": "2.0",
+                        "id": None,
+                        "error": {"code": -32600, "message": "Invalid Request: batch requires non-empty array under protocolVersion 2025-03-26"},
+                    })
+                    continue
+                batch_responses: list[dict[str, Any]] = []
+                for item in msg:
+                    err_obj = _validate_envelope_error(item)
+                    if err_obj is not None:
+                        batch_responses.append(err_obj)
+                        continue
+                    has_id = "id" in item
+                    method = item["method"]
+                    if not has_id and method == "notifications/cancelled":
+                        _cancel_inflight_request(item)
+                        continue
+                    if not has_id and method == "notifications/initialized":
+                        continue
+                    if not has_id:
+                        continue
+                    _handle_request(item, threading.Event(), send_fn=batch_responses.append)
+                if batch_responses:
+                    _send_raw(batch_responses)
                 continue
 
-            method = msg.get("method")
+            err_obj = _validate_envelope_error(msg)
+            if err_obj is not None:
+                _send(err_obj)
+                continue
+
             has_id = "id" in msg
+            method = msg["method"]
             msg_id = msg.get("id")
 
-            if has_id and not _is_valid_jsonrpc_id(msg_id):
-                _send({
-                    "jsonrpc": "2.0",
-                    "id": None,
-                    "error": {"code": -32600, "message": "Invalid Request: 'id' must be a string or integer"},
-                })
+            if not has_id and method == "notifications/cancelled":
+                _cancel_inflight_request(msg)
                 continue
 
-            if method == "notifications/cancelled":
-                params = msg.get("params") or {}
-                if isinstance(params, dict) and "requestId" in params:
-                    target_id = params["requestId"]
-                    if _is_valid_jsonrpc_id(target_id):
-                        with CANCEL_LOCK:
-                            ev = CANCEL_EVENTS.get(target_id)
-                        if ev is not None:
-                            ev.set()
+            if not has_id and method == "notifications/initialized":
                 continue
 
-            if method == "notifications/initialized":
-                continue
-
-            if msg_id is None:
-                continue
-
-            if not isinstance(method, str):
-                _send({
-                    "jsonrpc": "2.0",
-                    "id": msg_id,
-                    "error": {"code": -32600, "message": "Invalid Request: 'method' must be a string"},
-                })
+            if not has_id:
                 continue
 
             cancel_event = threading.Event()
@@ -2682,17 +3132,26 @@ def main() -> None:
                 and isinstance(msg.get("params"), dict)
                 and msg["params"].get("name") == "codex_job_cancel"
             ):
-                control_executor.submit(_handle_request, msg, cancel_event)
+                fut = control_executor.submit(_handle_request, msg, cancel_event)
+                with CANCEL_LOCK:
+                    if CANCEL_EVENTS.get(msg_id) is cancel_event:
+                        REQUEST_FUTURES[msg_id] = fut
             else:
-                executor.submit(_handle_request, msg, cancel_event)
+                fut = executor.submit(_handle_request, msg, cancel_event)
+                with CANCEL_LOCK:
+                    if CANCEL_EVENTS.get(msg_id) is cancel_event:
+                        REQUEST_FUTURES[msg_id] = fut
     finally:
+        SHUTDOWN_EVENT.set()
         with CANCEL_LOCK:
             for ev in CANCEL_EVENTS.values():
                 ev.set()
+            for fut in REQUEST_FUTURES.values():
+                fut.cancel()
         to_terminate: list[tuple[subprocess.Popen[bytes], _WinJobObject | None]] = []
         with JOBS_LOCK:
             for job in list(JOBS.values()):
-                if not job["doneEvent"].is_set():
+                if not job["doneEvent"].is_set() and job["status"] not in _TERMINAL_JOB_STATUSES:
                     job["status"] = "cancelling"
                     proc = job.get("proc")
                     job_obj = job.get("jobObj")

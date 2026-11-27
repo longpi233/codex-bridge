@@ -19,75 +19,173 @@
         transport: stdio
         command: !!js >
           (() => {
-            const envPy = (process.env.CODEX_BRIDGE_PYTHON || "").trim();
-            if (envPy) return envPy;
             const fs = process.getBuiltinModule("node:fs");
+            const path = process.getBuiltinModule("node:path");
             const { execFileSync } = process.getBuiltinModule("node:child_process");
+            const le = (() => {
+              try {
+                return typeof ctx !== "undefined" && typeof ctx?.get === "function"
+                  ? ctx.get("launchEnvironment")
+                  : null;
+              } catch {
+                return null;
+              }
+            })();
+            const isPy310 = (bin) => {
+              try {
+                execFileSync(
+                  bin,
+                  ["-c", "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)"],
+                  { stdio: "ignore", timeout: 5000 },
+                );
+                return true;
+              } catch {
+                return false;
+              }
+            };
+            const rawEnvPy = le
+              ? le.getFrom("CODEX_BRIDGE_PYTHON", ["process", "user-env"])?.value
+              : process.env.CODEX_BRIDGE_PYTHON;
+            const envPy = typeof rawEnvPy === "string" ? rawEnvPy.trim() : "";
+            if (envPy) {
+              if (!isPy310(envPy)) {
+                throw new Error(`CODEX_BRIDGE_PYTHON (${envPy}) is unavailable or older than Python 3.10.`);
+              }
+              return envPy;
+            }
             if (process.platform === "win32") {
-              try {
-                const lines = execFileSync("where.exe", ["python"], {
-                  encoding: "utf8",
-                  stdio: ["ignore", "pipe", "ignore"],
-                }).split(/\r?\n/);
-                const hit = lines
-                  .map((s) => s.trim())
-                  .find((p) => p && !/WindowsApps\\python\.exe$/i.test(p) && fs.existsSync(p));
-                if (hit) return hit;
-              } catch {}
-              return "python";
+              for (const query of ["python", "python3", "py"]) {
+                let lines = [];
+                try {
+                  lines = execFileSync("where.exe", [query], {
+                    encoding: "utf8",
+                    stdio: ["ignore", "pipe", "ignore"],
+                    timeout: 5000,
+                  }).split(/\r?\n/);
+                } catch {
+                  continue;
+                }
+                for (const rawLine of lines) {
+                  const p = rawLine.trim();
+                  if (!p || /WindowsApps\\python[^\\]*\.exe$/i.test(p) || !fs.existsSync(p)) continue;
+                  if (/\\py\.exe$/i.test(p)) {
+                    try {
+                      const exe = execFileSync(
+                        p,
+                        ["-3", "-c", "import sys; print(sys.executable) if sys.version_info >= (3, 10) else sys.exit(1)"],
+                        { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5000 },
+                      ).trim().split(/\r?\n/)[0];
+                      if (exe && fs.existsSync(exe) && isPy310(exe)) return exe;
+                    } catch {}
+                    continue;
+                  }
+                  if (isPy310(p)) return p;
+                }
+              }
+              throw new Error(
+                "codex-bridge requires Python 3.10+. Install Python 3.10+ or set CODEX_BRIDGE_PYTHON in your user/process environment.",
+              );
             }
-            for (const bin of ["python3", "python"]) {
-              try {
-                const hit = execFileSync("which", [bin], {
-                  encoding: "utf8",
-                  stdio: ["ignore", "pipe", "ignore"],
-                }).trim().split(/\r?\n/)[0];
-                if (hit && fs.existsSync(hit)) return hit;
-              } catch {}
+            const candidates = [];
+            for (const dir of (process.env.PATH || "").split(path.delimiter).filter(Boolean)) {
+              candidates.push(path.join(dir, "python3"), path.join(dir, "python"));
             }
-            return "python3";
+            candidates.push("/opt/homebrew/bin/python3", "/usr/local/bin/python3", "/usr/bin/python3");
+            for (const cand of new Set(candidates)) {
+              if (fs.existsSync(cand) && isPy310(cand)) return cand;
+            }
+            throw new Error(
+              "codex-bridge requires Python 3.10+. Install Python 3.10+ or set CODEX_BRIDGE_PYTHON in your user/process environment.",
+            );
+          })()
+        env: !!js >
+          (() => {
+            const le = (() => {
+              try {
+                return typeof ctx !== "undefined" && typeof ctx?.get === "function"
+                  ? ctx.get("launchEnvironment")
+                  : null;
+              } catch {
+                return null;
+              }
+            })();
+            if (!le) return {};
+            const trusted = le.getFrom("CODEX_BIN", ["process", "user-env"])?.value;
+            const anyVal = le.get("CODEX_BIN")?.value;
+            if (!trusted && anyVal) return { CODEX_BIN: "" };
+            return {};
           })()
         args: !!js >
           (() => {
             const fs = process.getBuiltinModule("node:fs");
             const path = process.getBuiltinModule("node:path");
             const { createRequire } = process.getBuiltinModule("node:module");
-            const bases = [
-              typeof ctx !== "undefined" ? ctx?.profileContext?.dir : null,
-              process.cwd(),
-            ].filter(Boolean);
-            for (const base of bases) {
+            const isValidRoot = (dir) => {
+              if (!dir) return false;
+              try {
+                const pkg = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8"));
+                return pkg?.name === "codex-bridge"
+                  && fs.existsSync(path.join(dir, "server", "codex_mcp_server.py"))
+                  && fs.existsSync(path.join(dir, "skills", "codex-delegate", "SKILL.md"));
+              } catch {
+                return false;
+              }
+            };
+            const profileDir = (() => {
+              try {
+                return typeof ctx !== "undefined" && typeof ctx?.get === "function"
+                  ? ctx.get("profileContext")?.dir
+                  : null;
+              } catch {
+                return null;
+              }
+            })();
+            for (const base of [profileDir, process.cwd()].filter(Boolean)) {
               try {
                 const req = createRequire(path.join(base, "package.json"));
                 const dir = path.dirname(req.resolve("codex-bridge/package.json"));
-                const srv = path.join(dir, "server", "codex_mcp_server.py");
-                if (fs.existsSync(srv)) return ["-u", srv];
+                if (isValidRoot(dir)) return ["-u", path.join(dir, "server", "codex_mcp_server.py")];
               } catch {}
             }
-            const localSrv = path.join(process.cwd(), "server", "codex_mcp_server.py");
-            if (fs.existsSync(localSrv)) return ["-u", localSrv];
-            return ["-u", path.join(process.cwd(), "node_modules", "codex-bridge", "server", "codex_mcp_server.py")];
+            if (isValidRoot(process.cwd())) {
+              return ["-u", path.join(process.cwd(), "server", "codex_mcp_server.py")];
+            }
+            throw new Error("Unable to locate verified codex-bridge package root for MCP server.");
           })()
         cwd: !!js >
           (() => {
             const fs = process.getBuiltinModule("node:fs");
             const path = process.getBuiltinModule("node:path");
             const { createRequire } = process.getBuiltinModule("node:module");
-            const bases = [
-              typeof ctx !== "undefined" ? ctx?.profileContext?.dir : null,
-              process.cwd(),
-            ].filter(Boolean);
-            for (const base of bases) {
+            const isValidRoot = (dir) => {
+              if (!dir) return false;
+              try {
+                const pkg = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8"));
+                return pkg?.name === "codex-bridge"
+                  && fs.existsSync(path.join(dir, "server", "codex_mcp_server.py"))
+                  && fs.existsSync(path.join(dir, "skills", "codex-delegate", "SKILL.md"));
+              } catch {
+                return false;
+              }
+            };
+            const profileDir = (() => {
+              try {
+                return typeof ctx !== "undefined" && typeof ctx?.get === "function"
+                  ? ctx.get("profileContext")?.dir
+                  : null;
+              } catch {
+                return null;
+              }
+            })();
+            for (const base of [profileDir, process.cwd()].filter(Boolean)) {
               try {
                 const req = createRequire(path.join(base, "package.json"));
                 const dir = path.dirname(req.resolve("codex-bridge/package.json"));
-                if (fs.existsSync(path.join(dir, "server", "codex_mcp_server.py"))) return dir;
+                if (isValidRoot(dir)) return dir;
               } catch {}
             }
-            if (fs.existsSync(path.join(process.cwd(), "server", "codex_mcp_server.py"))) {
-              return process.cwd();
-            }
-            return path.join(process.cwd(), "node_modules", "codex-bridge");
+            if (isValidRoot(process.cwd())) return process.cwd();
+            throw new Error("Unable to locate verified codex-bridge package root.");
           })()
         toolCallTimeoutMs: 1800000
         failOnStartupError: true
@@ -110,19 +208,33 @@
             const fs = process.getBuiltinModule("node:fs");
             const path = process.getBuiltinModule("node:path");
             const { createRequire } = process.getBuiltinModule("node:module");
-            const bases = [
-              typeof ctx !== "undefined" ? ctx?.profileContext?.dir : null,
-              process.cwd(),
-            ].filter(Boolean);
-            for (const base of bases) {
+            const isValidRoot = (dir) => {
+              if (!dir) return false;
+              try {
+                const pkg = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8"));
+                return pkg?.name === "codex-bridge"
+                  && fs.existsSync(path.join(dir, "server", "codex_mcp_server.py"))
+                  && fs.existsSync(path.join(dir, "skills", "codex-delegate", "SKILL.md"));
+              } catch {
+                return false;
+              }
+            };
+            const profileDir = (() => {
+              try {
+                return typeof ctx !== "undefined" && typeof ctx?.get === "function"
+                  ? ctx.get("profileContext")?.dir
+                  : null;
+              } catch {
+                return null;
+              }
+            })();
+            for (const base of [profileDir, process.cwd()].filter(Boolean)) {
               try {
                 const req = createRequire(path.join(base, "package.json"));
                 const dir = path.dirname(req.resolve("codex-bridge/package.json"));
-                const skillsDir = path.join(dir, "skills");
-                if (fs.existsSync(skillsDir)) return skillsDir;
+                if (isValidRoot(dir)) return path.join(dir, "skills");
               } catch {}
             }
-            const localSkills = path.join(process.cwd(), "skills");
-            if (fs.existsSync(localSkills)) return localSkills;
-            return path.join(process.cwd(), "node_modules", "codex-bridge", "skills");
+            if (isValidRoot(process.cwd())) return path.join(process.cwd(), "skills");
+            throw new Error("Unable to locate verified codex-bridge package root for bundled skills.");
           })()
