@@ -395,16 +395,87 @@ def test_unit_fixes():
         if hasattr(mod.signal, "SIGKILL"):
             mod.signal.SIGKILL = orig_sigkill
 
-    # 13. _resolve_timeout_seconds defaults & safe floors
-    assert mod._resolve_timeout_seconds(None, None) == 600
-    assert mod._resolve_timeout_seconds(None, "medium") == 600
-    assert mod._resolve_timeout_seconds(None, "high") == 900
-    assert mod._resolve_timeout_seconds(None, "xhigh") == 900
+    # 13. _resolve_timeout_seconds defaults (900/1800), 0=no-limit, floors (180/300), cap (3600)
+    assert mod._resolve_timeout_seconds(None, None) == 900
+    assert mod._resolve_timeout_seconds(None, "medium") == 900
+    assert mod._resolve_timeout_seconds(None, "high") == 1800
+    assert mod._resolve_timeout_seconds(None, "xhigh") == 1800
+    assert mod._resolve_timeout_seconds(0, "xhigh") == 0
     assert mod._resolve_timeout_seconds(30, "low") == 180
     assert mod._resolve_timeout_seconds(60, "xhigh") == 300
-    assert mod._resolve_timeout_seconds(9999, "low") == 1800
+    assert mod._resolve_timeout_seconds(9999, "low") == 3600
 
-    # 14. Codex binary resolution (native codex.exe on Windows when installed via npm)
+    # 14. background: true defaults ephemeral=False (resumable), sync defaults ephemeral=True
+    with tempfile.TemporaryDirectory() as bg_dir:
+        fc_bg = _make_fake_codex(
+            bg_dir,
+            "fake_bg_ephem",
+            """import json, sys
+args = sys.argv[1:]
+if "review" not in args:
+    _ = sys.stdin.read()
+out_idx = args.index("-o") + 1
+with open(args[out_idx], "w", encoding="utf-8") as of:
+    of.write("BG_OK")
+print(json.dumps({"type": "thread.started", "thread_id": "sess-bg-1"}))
+""",
+        )
+        old_cb = os.environ.get("CODEX_BIN")
+        os.environ["CODEX_BIN"] = fc_bg
+        try:
+            sync_res = mod.tool_exec({"prompt": "sync check", "cwd": bg_dir})
+            assert sync_res["resumable"] is False
+
+            bg_res = mod.tool_exec({"prompt": "bg check", "cwd": bg_dir, "background": True})
+            assert bg_res["resumable"] is True
+            done_bg = mod.tool_job_status({"job_id": bg_res["jobId"], "wait_seconds": 120})
+            assert done_bg["status"] == "completed" and "toolCallsCount" in done_bg
+
+            # Verify wait_seconds=120 works on listing too
+            all_st = mod.tool_job_status({"wait_seconds": 120})
+            assert "totalJobs" in all_st
+        finally:
+            if old_cb is None:
+                os.environ.pop("CODEX_BIN", None)
+            else:
+                os.environ["CODEX_BIN"] = old_cb
+
+    # 15. Timeout preserves full agentMessages + activityLog + resumable hint without log hunting
+    with tempfile.TemporaryDirectory() as to_dir:
+        fc_to = _make_fake_codex(
+            to_dir,
+            "fake_to",
+            """import json, sys, time
+args = sys.argv[1:]
+_ = sys.stdin.read()
+print(json.dumps({"type": "thread.started", "thread_id": "sess-to-1"}), flush=True)
+print(json.dumps({"type": "item.completed", "item": {"type": "command_execution", "command": "rg foo src/", "exit_code": 0, "aggregated_output": "src/a.py:10:foo"}}), flush=True)
+print(json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "Partial finding 1: checked src/a.py."}}), flush=True)
+print(json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "Partial finding 2: checking src/b.py next."}}), flush=True)
+time.sleep(5.0)
+""",
+        )
+        old_cb = os.environ.get("CODEX_BIN")
+        os.environ["CODEX_BIN"] = fc_to
+        try:
+            to_res = mod._run_codex_exec(
+                [fc_to, "exec", "-C", to_dir, "-s", "read-only"],
+                prompt="audit",
+                timeout_seconds=1,
+                session_meta={"cwd": to_dir, "sandbox": "read-only", "model": "gpt-6.2-astra"},
+            )
+            assert to_res["timedOut"] is True and to_res["exitCode"] == -1, to_res
+            assert "Partial finding 1" in to_res["response"] and "Partial finding 2" in to_res["response"], to_res
+            assert len(to_res.get("agentMessages", [])) == 2, to_res
+            assert to_res.get("activityLog") and to_res["activityLog"][0]["command"] == "rg foo src/", to_res
+            assert "sess-to-1" in to_res.get("warning", ""), to_res
+        finally:
+            if old_cb is None:
+                os.environ.pop("CODEX_BIN", None)
+            else:
+                os.environ["CODEX_BIN"] = old_cb
+
+    # 16. Codex binary resolution (native codex.exe on Windows when installed via npm)
     codex_bin, env = mod._resolve_codex_command()
     print("Resolved codex_bin:", codex_bin)
     if os.name == "nt" and "codex-win32" in codex_bin.lower():

@@ -480,11 +480,13 @@ def _as_int(val: Any, default: int, name: str, minimum: int, maximum: int) -> in
 
 
 def _resolve_timeout_seconds(val: Any, reasoning_effort: str | None) -> int:
-    """Resolve timeout_seconds with reasoning-aware defaults (600s/900s) and safe floors (180s/300s)."""
+    """Resolve timeout_seconds: 900s/1800s defaults, 180s/300s floors, up to 3600s, or 0 for no hard limit."""
     is_heavy = reasoning_effort in ("high", "xhigh", "max", "ultra")
-    default = 900 if is_heavy else 600
+    if val is not None and not isinstance(val, bool) and val == 0:
+        return 0
+    default = 1800 if is_heavy else 900
     floor = 300 if is_heavy else 180
-    return _as_int(val, default, "timeout_seconds", floor, 1800)
+    return _as_int(val, default, "timeout_seconds", floor, 3600)
 
 
 def _as_float(val: Any, default: float, name: str, minimum: float, maximum: float) -> float:
@@ -1095,6 +1097,39 @@ def _git_fingerprint(cwd: str | None) -> dict[str, Any] | None:
         return None
 
 
+def _summarize_activity_item(item: dict[str, Any]) -> tuple[dict[str, Any] | None, bool]:
+    """Extract a compact summary and whether the completed item counts as a tool/action call."""
+    itype = item.get("type")
+    if itype == "command_execution":
+        out = item.get("aggregated_output") or item.get("output") or ""
+        if not isinstance(out, str):
+            out = str(out)
+        entry: dict[str, Any] = {
+            "type": "command_execution",
+            "command": item.get("command"),
+            "exitCode": item.get("exit_code"),
+        }
+        if out.strip():
+            entry["outputTail"] = out.strip()[-800:]
+        return entry, True
+    if itype == "web_search":
+        return {"type": "web_search", "query": item.get("query")}, True
+    if itype == "mcp_tool_call":
+        return {
+            "type": "mcp_tool_call",
+            "server": item.get("server"),
+            "tool": item.get("tool"),
+            "status": item.get("status"),
+        }, True
+    if itype == "file_change":
+        return {"type": "file_change", "changes": item.get("changes")}, True
+    if itype == "reasoning":
+        text = (item.get("text") or "").strip()
+        if text:
+            return {"type": "reasoning", "text": text[:500]}, False
+    return None, False
+
+
 def _run_codex_exec(
     cmd: list[str],
     prompt: str | None,
@@ -1147,6 +1182,7 @@ def _run_codex_exec(
         rate_limits = None
         thread_id = None
         agent_messages: list[str] = []
+        activity_log: collections.deque[dict[str, Any]] = collections.deque(maxlen=30)
         stderr_chunks: collections.deque[bytes] = collections.deque()
         stderr_bytes = 0
         timed_out = False
@@ -1181,6 +1217,9 @@ def _run_codex_exec(
                 except json.JSONDecodeError:
                     continue
                 ev_type = ev.get("type")
+                if job_record is not None:
+                    with JOBS_LOCK:
+                        job_record["lastActivityAt"] = time.time()
                 if ev_type == "thread.started" and ev.get("thread_id"):
                     thread_id = ev["thread_id"]
                     if session_meta is not None:
@@ -1205,6 +1244,13 @@ def _run_codex_exec(
                             with JOBS_LOCK:
                                 job_record["agentMessagesCount"] = len(agent_messages)
                                 job_record["lastMessagePreview"] = item["text"][:200]
+                    else:
+                        summary, is_tool = _summarize_activity_item(item)
+                        if summary is not None:
+                            activity_log.append(summary)
+                        if is_tool and job_record is not None:
+                            with JOBS_LOCK:
+                                job_record["toolCallsCount"] = job_record.get("toolCallsCount", 0) + 1
                 elif ev_type == "event_msg":
                     payload = ev.get("payload", {})
                     if payload.get("type") == "token_count":
@@ -1245,7 +1291,7 @@ def _run_codex_exec(
         t_out.start()
         t_err.start()
 
-        deadline = time.monotonic() + timeout_seconds
+        deadline = (time.monotonic() + timeout_seconds) if timeout_seconds > 0 else None
         while proc.poll() is None:
             if cancel_event is not None and cancel_event.is_set():
                 cancelled = True
@@ -1253,11 +1299,14 @@ def _run_codex_exec(
             if job_record is not None and job_record["status"] == "cancelling":
                 cancelled = True
                 break
-            rem = deadline - time.monotonic()
-            if rem <= 0:
-                timed_out = True
-                break
-            time.sleep(min(0.2, rem))
+            if deadline is not None:
+                rem = deadline - time.monotonic()
+                if rem <= 0:
+                    timed_out = True
+                    break
+                time.sleep(min(0.2, rem))
+            else:
+                time.sleep(0.2)
 
         if cancelled or timed_out:
             _terminate_process_tree(proc, job_obj)
@@ -1288,11 +1337,24 @@ def _run_codex_exec(
         }
         if thread_id:
             result["sessionId"] = thread_id
-        if timed_out:
-            result["warning"] = (
-                f"Codex exec exceeded {timeout_seconds}s and was terminated. "
-                "Partial output (if any) is preserved above."
+        if timed_out or cancelled:
+            reason = f"exceeded {timeout_seconds}s and was terminated" if timed_out else "was cancelled"
+            resume_hint = (
+                f" Session '{thread_id}' is persisted and resumable: call "
+                f"codex_exec(session_id='{thread_id}', reasoning_effort='low', "
+                "prompt='Do not run any new tools or searches; output all verified findings so far.') "
+                "to harvest a complete summary without re-running work."
+                if (thread_id and session_meta is not None)
+                else ""
             )
+            result["warning"] = (
+                f"Codex exec {reason}. All captured messages (`agentMessages`) and recent "
+                f"tool activity (`activityLog`) are included below.{resume_hint}"
+            )
+        if (timed_out or cancelled or exit_code != 0) and agent_messages:
+            result["agentMessages"] = list(agent_messages)
+        if (timed_out or cancelled or exit_code != 0) and activity_log:
+            result["activityLog"] = list(activity_log)
         if usage:
             result["usage"] = usage
         if rate_limits:
@@ -1367,16 +1429,19 @@ def _launch_background_job(
 
         job_id = uuid.uuid4().hex[:12]
         done_event = threading.Event()
+        now_ts = time.time()
         job_record: dict[str, Any] = {
             "jobId": job_id,
             "requestId": request_id,
             "kind": kind,
             "status": "queued",
-            "startedAt": time.time(),
+            "startedAt": now_ts,
+            "lastActivityAt": now_ts,
             "finishedAt": None,
             "meta": meta,
             "sessionId": session_id,
             "agentMessagesCount": 0,
+            "toolCallsCount": 0,
             "lastMessagePreview": None,
             "result": None,
             "error": None,
@@ -1479,7 +1544,7 @@ def _launch_background_job(
         "kind": kind,
         "timeoutSeconds": timeout_seconds,
         **meta,
-        "note": "Job queued/started in background. Poll codex_job_status(job_id=..., wait_seconds=25) to collect results.",
+        "note": "Job queued/started in background. Poll codex_job_status(job_id=..., wait_seconds=90) or omit job_id with include_results=true to monitor multiple jobs.",
     }
 
 
@@ -1493,12 +1558,16 @@ def _serialize_job(job: dict[str, Any], include_result: bool = True) -> dict[str
         "elapsedSeconds": round(end - job["startedAt"], 1),
         "sessionId": job["sessionId"],
         "agentMessagesCount": job["agentMessagesCount"],
+        "toolCallsCount": job.get("toolCallsCount", 0),
         **job["meta"],
     }
     if job.get("requestId"):
         out["requestId"] = job["requestId"]
-    if job["status"] in ("queued", "starting", "running", "cancelling") and job["lastMessagePreview"]:
-        out["lastMessagePreview"] = job["lastMessagePreview"]
+    if job["status"] in ("queued", "starting", "running", "cancelling"):
+        last_act = job.get("lastActivityAt") or job["startedAt"]
+        out["idleSeconds"] = round(max(0.0, now - last_act), 1)
+        if job["lastMessagePreview"]:
+            out["lastMessagePreview"] = job["lastMessagePreview"]
     if job["error"]:
         out["error"] = job["error"]
     if include_result and job["result"] is not None:
@@ -1511,7 +1580,7 @@ def tool_job_status(args: dict[str, Any], cancel_event: threading.Event | None =
     if not isinstance(args, dict):
         raise ValueError("Arguments must be an object.")
     job_id = args.get("job_id")
-    wait_seconds = _as_float(args.get("wait_seconds"), 0.0, "wait_seconds", 0.0, 60.0)
+    wait_seconds = _as_float(args.get("wait_seconds"), 0.0, "wait_seconds", 0.0, 120.0)
     include_results = _as_bool(args.get("include_results"), False, "include_results")
 
     if job_id is not None:
@@ -1634,9 +1703,9 @@ def tool_exec(args: dict[str, Any], cancel_event: threading.Event | None = None)
             raise ValueError("'session_id' must be a non-empty string.")
         session_id = session_id.strip()
 
-    ephemeral = _as_bool(args.get("ephemeral"), False if session_id else True, "ephemeral")
-    skip_git_check = _as_bool(args.get("skip_git_repo_check"), True, "skip_git_repo_check")
     background = _as_bool(args.get("background"), False, "background")
+    ephemeral = _as_bool(args.get("ephemeral"), False if (session_id or background) else True, "ephemeral")
+    skip_git_check = _as_bool(args.get("skip_git_repo_check"), True, "skip_git_repo_check")
     timeout_seconds = _resolve_timeout_seconds(args.get("timeout_seconds"), reasoning_effort)
 
     request_id = args.get("request_id")
@@ -1708,6 +1777,7 @@ def tool_exec(args: dict[str, Any], cancel_event: threading.Event | None = None)
         "requestedSandbox": sandbox,
         "cwd": cwd,
         "resumed": bool(session_id),
+        "resumable": not ephemeral,
     }
     if profile:
         meta["profile"] = profile
@@ -1994,8 +2064,8 @@ TOOLS: list[dict[str, Any]] = [
                 "ephemeral": {
                     "type": "boolean",
                     "description": (
-                        "Do not persist session files to disk (default: true for new runs, "
-                        "false when resuming). Set false on the first call to enable multi-turn resume."
+                        "Do not persist session files to disk (default: true for sync new runs, "
+                        "false when `background: true` or resuming so interrupted jobs can be resumed)."
                     ),
                 },
                 "skip_git_repo_check": {
@@ -2005,8 +2075,9 @@ TOOLS: list[dict[str, Any]] = [
                 "timeout_seconds": {
                     "type": "integer",
                     "description": (
-                        "Backend execution timeout in seconds (180-1800; omit to use recommended defaults: "
-                        "600 for low/medium, 900 for high/xhigh/max/ultra). Do not pass small values like 30-120s."
+                        "Backend execution timeout in seconds (180-3600, or 0 for no hard wall-clock limit; "
+                        "omit for defaults: 900s for low/medium, 1800s for high/xhigh/max/ultra). "
+                        "Do not pass small values like 30-120s."
                     ),
                 },
                 "background": {
@@ -2070,8 +2141,9 @@ TOOLS: list[dict[str, Any]] = [
                 "timeout_seconds": {
                     "type": "integer",
                     "description": (
-                        "Backend execution timeout in seconds (180-1800; omit to use recommended defaults: "
-                        "600 for low/medium, 900 for high/xhigh/max/ultra). Do not pass small values like 30-120s."
+                        "Backend execution timeout in seconds (180-3600, or 0 for no hard wall-clock limit; "
+                        "omit for defaults: 900s for low/medium, 1800s for high/xhigh/max/ultra). "
+                        "Do not pass small values like 30-120s."
                     ),
                 },
                 "background": {
@@ -2091,19 +2163,22 @@ TOOLS: list[dict[str, Any]] = [
         "name": "codex_job_status",
         "description": (
             "Check progress or collect results of background Codex jobs started with "
-            "`background: true`. Pass `job_id` for full result, or omit `job_id` to list "
-            "job summaries and tracked resumable `activeSessions`."
+            "`background: true`. Pass `job_id` for a single job, or omit `job_id` (with "
+            "`include_results: true`) to wait on and inspect all active jobs in one call, plus `activeSessions`."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "job_id": {
                     "type": "string",
-                    "description": "Specific jobId to inspect (omit to list all background job summaries).",
+                    "description": "Specific jobId to inspect (omit to wait on and list all background jobs).",
                 },
                 "wait_seconds": {
                     "type": "number",
-                    "description": "Optional seconds (0-60) to wait for completion before returning (keep 15-30s inside MCP clients).",
+                    "description": (
+                        "Seconds (0-120) to wait for completion before returning early if done "
+                        "(use 30-45 for low/medium, 90-120 for high/xhigh/astra)."
+                    ),
                 },
                 "include_results": {
                     "type": "boolean",
