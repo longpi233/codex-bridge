@@ -479,6 +479,14 @@ def _as_int(val: Any, default: int, name: str, minimum: int, maximum: int) -> in
     return max(minimum, min(maximum, val))
 
 
+def _resolve_timeout_seconds(val: Any, reasoning_effort: str | None) -> int:
+    """Resolve timeout_seconds with reasoning-aware defaults (600s/900s) and safe floors (180s/300s)."""
+    is_heavy = reasoning_effort in ("high", "xhigh", "max", "ultra")
+    default = 900 if is_heavy else 600
+    floor = 300 if is_heavy else 180
+    return _as_int(val, default, "timeout_seconds", floor, 1800)
+
+
 def _as_float(val: Any, default: float, name: str, minimum: float, maximum: float) -> float:
     if val is None:
         return default
@@ -918,7 +926,7 @@ def tool_quota_status(args: dict[str, Any]) -> dict[str, Any]:
         acc_msg, rl_msg = APP_SERVER.call_batch([
             ("account/read", {}),
             ("account/rateLimits/read", {}),
-        ], timeout=15.0)
+        ], timeout=25.0)
         if "error" in rl_msg:
             raise RuntimeError(f"rateLimits error: {rl_msg['error']}")
 
@@ -993,7 +1001,7 @@ def tool_list_models(args: dict[str, Any]) -> dict[str, Any]:
             params: dict[str, Any] = {"includeHidden": include_hidden}
             if cursor:
                 params["cursor"] = cursor
-            (msg,) = APP_SERVER.call_batch([("model/list", params)], timeout=15.0)
+            (msg,) = APP_SERVER.call_batch([("model/list", params)], timeout=25.0)
             if "error" in msg:
                 raise RuntimeError(f"model/list error: {msg['error']}")
             result = msg.get("result")
@@ -1053,6 +1061,7 @@ def _git_fingerprint(cwd: str | None) -> dict[str, Any] | None:
     try:
         head = subprocess.run(
             ["git", "-C", cwd, "rev-parse", "HEAD"],
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             timeout=3,
         )
@@ -1060,6 +1069,7 @@ def _git_fingerprint(cwd: str | None) -> dict[str, Any] | None:
             return None
         status = subprocess.run(
             ["git", "-C", cwd, "status", "--porcelain"],
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             timeout=3,
         )
@@ -1068,6 +1078,7 @@ def _git_fingerprint(cwd: str | None) -> dict[str, Any] | None:
         try:
             diff = subprocess.run(
                 ["git", "-C", cwd, "diff", "--no-ext-diff"],
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 timeout=2,
             )
@@ -1626,7 +1637,7 @@ def tool_exec(args: dict[str, Any], cancel_event: threading.Event | None = None)
     ephemeral = _as_bool(args.get("ephemeral"), False if session_id else True, "ephemeral")
     skip_git_check = _as_bool(args.get("skip_git_repo_check"), True, "skip_git_repo_check")
     background = _as_bool(args.get("background"), False, "background")
-    timeout_seconds = _as_int(args.get("timeout_seconds"), 600, "timeout_seconds", 10, 1800)
+    timeout_seconds = _resolve_timeout_seconds(args.get("timeout_seconds"), reasoning_effort)
 
     request_id = args.get("request_id")
     if request_id is not None:
@@ -1801,7 +1812,7 @@ def tool_review(args: dict[str, Any], cancel_event: threading.Event | None = Non
         raise ValueError("Must specify at least one of 'uncommitted=true', 'base', 'commit', or 'focus'.")
 
     background = _as_bool(args.get("background"), False, "background")
-    timeout_seconds = _as_int(args.get("timeout_seconds"), 600, "timeout_seconds", 10, 1800)
+    timeout_seconds = _resolve_timeout_seconds(args.get("timeout_seconds"), reasoning_effort)
 
     request_id = args.get("request_id")
     if request_id is not None:
@@ -1993,7 +2004,10 @@ TOOLS: list[dict[str, Any]] = [
                 },
                 "timeout_seconds": {
                     "type": "integer",
-                    "description": "Backend execution timeout in seconds (10-1800, default: 600).",
+                    "description": (
+                        "Backend execution timeout in seconds (180-1800; omit to use recommended defaults: "
+                        "600 for low/medium, 900 for high/xhigh/max/ultra). Do not pass small values like 30-120s."
+                    ),
                 },
                 "background": {
                     "type": "boolean",
@@ -2055,7 +2069,10 @@ TOOLS: list[dict[str, Any]] = [
                 },
                 "timeout_seconds": {
                     "type": "integer",
-                    "description": "Backend execution timeout in seconds (10-1800, default: 600).",
+                    "description": (
+                        "Backend execution timeout in seconds (180-1800; omit to use recommended defaults: "
+                        "600 for low/medium, 900 for high/xhigh/max/ultra). Do not pass small values like 30-120s."
+                    ),
                 },
                 "background": {
                     "type": "boolean",

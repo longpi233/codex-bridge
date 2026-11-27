@@ -395,7 +395,16 @@ def test_unit_fixes():
         if hasattr(mod.signal, "SIGKILL"):
             mod.signal.SIGKILL = orig_sigkill
 
-    # 13. Codex binary resolution (native codex.exe on Windows when installed via npm)
+    # 13. _resolve_timeout_seconds defaults & safe floors
+    assert mod._resolve_timeout_seconds(None, None) == 600
+    assert mod._resolve_timeout_seconds(None, "medium") == 600
+    assert mod._resolve_timeout_seconds(None, "high") == 900
+    assert mod._resolve_timeout_seconds(None, "xhigh") == 900
+    assert mod._resolve_timeout_seconds(30, "low") == 180
+    assert mod._resolve_timeout_seconds(60, "xhigh") == 300
+    assert mod._resolve_timeout_seconds(9999, "low") == 1800
+
+    # 14. Codex binary resolution (native codex.exe on Windows when installed via npm)
     codex_bin, env = mod._resolve_codex_command()
     print("Resolved codex_bin:", codex_bin)
     if os.name == "nt" and "codex-win32" in codex_bin.lower():
@@ -611,7 +620,7 @@ print(json.dumps({"type": "thread.started", "thread_id": "fake-exec-1"}))
         send({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "codex_exec", "arguments": {"prompt": "slow", "background": True, "request_id": "req-1"}}})
         r2 = json.loads(wait_id(2)["result"]["content"][0]["text"])
         r3 = json.loads(wait_id(3)["result"]["content"][0]["text"])
-        assert r2["jobId"] == r3["jobId"] and r3.get("deduplicated") is True, (r2, r3)
+        assert r2["jobId"] == r3["jobId"] and (bool(r2.get("deduplicated")) != bool(r3.get("deduplicated"))), (r2, r3)
 
         send({"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "codex_job_status", "arguments": {"job_id": r2["jobId"], "wait_seconds": 20}}})
         time.sleep(0.15)

@@ -14,25 +14,24 @@ Tool: `codex_quota_status`
 
 Check `recommendation.allowDelegation`, `recommendation.tier`, `recommendation.recommendedModel`, and `recommendation.recommendedReasoningEffort` before choosing a pattern below.
 
-## 2. Pattern A: Fast Read-Only Verification (Sync, < 2 min)
+## 2. Pattern A: Fast Pure-Text Q&A (Sync, No File Inspection)
 
-Use only for small, bounded questions (`gpt-6.2-sol` with `low`/`medium`).
+Use synchronous mode **only** for tiny, self-contained questions that do not inspect workspace files (`gpt-6.2-sol` with `low`). Omit `timeout_seconds` (server defaults to `600s`; never pass `< 180s`).
 
 Tool: `codex_exec`
 
 ```json
 {
-  "prompt": "Inspect src/auth.py lines 40-120 for token expiry edge cases. Read in a single command.",
+  "prompt": "Compare pros/cons of token-bucket vs sliding-window rate limiting in 5 bullets.",
   "model": "gpt-6.2-sol",
-  "reasoning_effort": "medium",
-  "cwd": "/path/to/repo",
+  "reasoning_effort": "low",
   "sandbox": "read-only"
 }
 ```
 
-## 3. Pattern B: Deep / Multi-Batch Analysis (`background: true`)
+## 3. Pattern B: Code Inspection / Deep Analysis (`background: true` — Recommended Default)
 
-Required for `gpt-6.2-astra`, `high`/`xhigh`/`max`/`ultra` reasoning, or multi-file audits to stay under strict MCP call deadlines (e.g. Antigravity's 3-minute ceiling).
+Use `background: true` whenever Codex reads workspace files, runs shell commands, or uses `medium`/`high`/`xhigh`/`max`/`ultra` reasoning to stay safely below MCP host deadlines (e.g. Antigravity's 3-minute limit). Omit `timeout_seconds` (defaults to `600s` for `low`/`medium`, `900s` for `high`+), or pass `1200` for massive audits.
 
 1. Launch 1 or more parallel batches immediately (use `request_id` to make retries idempotent):
 
@@ -50,14 +49,14 @@ Tool: `codex_exec`
 }
 ```
 
-2. Poll with `wait_seconds: 25` (safe inside 180s limit):
+2. Poll with `wait_seconds: 30` (safe inside 180s limit):
 
 Tool: `codex_job_status`
 
 ```json
 {
   "job_id": "<jobId>",
-  "wait_seconds": 25
+  "wait_seconds": 30
 }
 ```
 
