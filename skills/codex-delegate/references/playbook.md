@@ -16,7 +16,7 @@ Check `recommendation.allowDelegation`, `recommendation.tier`, `recommendation.r
 
 ## 2. Pattern A: Fast Pure-Text Q&A (Sync, No File Inspection)
 
-Use synchronous mode **only** for tiny, self-contained questions that do not inspect workspace files (`gpt-6.2-sol` with `low`). Omit `timeout_seconds` (server defaults to `600s`; never pass `< 180s`).
+Use synchronous mode **only** for tiny, self-contained questions that do not inspect workspace files (`gpt-6.2-sol` with `low`). Omit `timeout_seconds` (server defaults to `900s`; never pass `< 180s`).
 
 Tool: `codex_exec`
 
@@ -31,9 +31,9 @@ Tool: `codex_exec`
 
 ## 3. Pattern B: Code Inspection / Deep Analysis (`background: true` — Recommended Default)
 
-Use `background: true` whenever Codex reads workspace files, runs shell commands, or uses `medium`/`high`/`xhigh`/`max`/`ultra` reasoning to stay safely below MCP host deadlines (e.g. Antigravity's 3-minute limit). Omit `timeout_seconds` (defaults to `600s` for `low`/`medium`, `900s` for `high`+), or pass `1200` for massive audits.
+Use `background: true` whenever Codex reads workspace files, runs shell commands, or uses `medium`/`high`/`xhigh`/`max`/`ultra` reasoning to stay safely below MCP host deadlines (e.g. Antigravity's 3-minute limit). Omit `timeout_seconds` (defaults to `900s` for `low`/`medium`, `1800s` for `high`+), or pass `0` for no hard limit when managing duration yourself.
 
-1. Launch 1 or more parallel batches immediately (use `request_id` to make retries idempotent):
+1. Launch 1 or more parallel batches immediately (use `request_id` to make retries idempotent; `background: true` jobs default to `ephemeral: false` so they are always resumable):
 
 Tool: `codex_exec`
 
@@ -49,32 +49,42 @@ Tool: `codex_exec`
 }
 ```
 
-2. Poll with `wait_seconds: 30` (safe inside 180s limit):
+2. Poll efficiently (`wait_seconds: 90`–`120` for `high`/`xhigh`/`astra`; `30`–`45` for `low`/`medium`):
+   - **Single job**:
+     ```json
+     {
+       "job_id": "<jobId>",
+       "wait_seconds": 120
+     }
+     ```
+   - **Multiple jobs (2+)**: **Omit `job_id`** to wait on all active jobs in a single call instead of alternating polls:
+     ```json
+     {
+       "wait_seconds": 120,
+       "include_results": true
+     }
+     ```
 
-Tool: `codex_job_status`
-
-```json
-{
-  "job_id": "<jobId>",
-  "wait_seconds": 30
-}
-```
-
-3. Cancel if no longer needed:
-
-Tool: `codex_job_cancel`
-
-```json
-{
-  "job_id": "<jobId>"
-}
-```
+3. Self-directed pause & harvest (if a job runs too long or `idleSeconds` climbs):
+   - Cancel cleanly: `codex_job_cancel({"job_id": "<jobId>"})` — inspect `agentMessages` & `activityLog` in the returned payload (no log-file hunting needed).
+   - Harvest a structured wrap-up via `session_id`:
+     ```json
+     {
+       "session_id": "<sessionId>",
+       "model": "gpt-6.2-astra",
+       "reasoning_effort": "low",
+       "cwd": "/path/to/repo",
+       "sandbox": "read-only",
+       "background": true,
+       "prompt": "Do not run any new shell commands or searches. Output all verified findings so far in the requested format."
+     }
+     ```
 
 ## 4. Pattern C: Multi-Turn Review -> Fix -> Re-Verify (`session_id`)
 
 Reuse the Codex thread so Codex keeps prior context and achieves high prompt-cache hit rates:
 
-1. **Turn 1**: Pass `"ephemeral": false` in `codex_exec` (alongside `"background": true` if heavy). Save `sessionId` from the result.
+1. **Turn 1**: Pass `"ephemeral": false` in sync `codex_exec` (already default when `"background": true`). Save `sessionId` from the result.
 2. **Turn 2+**: Pass `"session_id": "<sessionId>"` (and the same `cwd` / `sandbox`). Avoid changing a `workspace-write` session to `read-only` on resume (rejected by server). Call `codex_job_status` with `{}` to list tracked `activeSessions` if you need to recover a `sessionId`.
 
 ## 5. Pattern D: Git Diff Review (`codex_review`)

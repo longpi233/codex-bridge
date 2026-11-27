@@ -20,13 +20,14 @@ A cross-platform, zero-dependency **MCP stdio server** and **Antigravity plugin*
 | `codex_list_models` | Model discovery | Lists available Codex GPT models (e.g., `gpt-6.2-sol`, `gpt-6.2-astra`) and supported reasoning efforts (`low` → `ultra`), with pagination and `include_hidden`. |
 | `codex_exec` | Prompt execution | Runs non-interactive tasks with upfront `cwd` check, configurable `sandbox`, `-p` `profile`, `-i` `images` (multimodal), `ephemeral: false` + `session_id` resume, and `background: true`. |
 | `codex_review` | Git diff review | Read-only review of `--uncommitted`, `--base <branch>`, `--commit <sha>`, or custom `focus` instructions, with optional `profile` and workspace-change detection. |
-| `codex_job_status` | Job & session tracking | Polls background jobs (`wait_seconds`), deduplicates via `request_id`, and lists tracked resumable `activeSessions` when `job_id` is omitted. |
+| `codex_job_status` | Job & session tracking | Polls background jobs (`wait_seconds` up to `120s`, `idleSeconds`, `toolCallsCount`), deduplicates via `request_id`, waits on all active jobs when `job_id` is omitted, and lists `activeSessions`. |
 | `codex_job_cancel` | Safe cancellation | Cancels queued or running jobs and kills the full child process tree (Windows Job Object on Windows; `start_new_session` + `os.killpg` on macOS/Linux). |
 
 ## Key Features
 
 - **Quota- & Reset-Time-Aware Task Routing**: Knows when your 5-hour or 7-day quota is about to reset with unused balance (`use_it_or_lose_it`), abundant, moderate, or nearly exhausted—so your main agent picks the right model and reasoning effort automatically.
-- **No More 3-Minute MCP Timeouts**: Pass `background: true` for deep `gpt-6.2-astra` (`high`/`xhigh`) audits or large git diffs, then collect results safely with `codex_job_status(wait_seconds=25)`.
+- **No More 3-Minute MCP Timeouts**: Pass `background: true` for deep `gpt-6.2-astra` (`high`/`xhigh`) audits or large git diffs, then collect results in one batch with `codex_job_status(wait_seconds=120, include_results=true)`.
+- **Flexible Timeouts & Resumable Recovery**: Defaults to `900s`/`1800s` (or `timeout_seconds: 0` for agent-controlled runs). Background `codex_exec` jobs are resumable (`ephemeral: false`) by default, and timed-out/cancelled runs return full captured `agentMessages` and `activityLog` directly—no hunting through log files.
 - **Multimodal & Config Profile Support**: Attach screenshots or diagrams to `codex_exec` via `images` (`-i`), or pass `profile` (`-p`) to reuse your `~/.codex` config profiles.
 - **Multi-Turn Context Continuity**: Set `ephemeral: false` on the first turn to obtain a `sessionId`, resume it with full context and prompt caching, and inspect `activeSessions` anytime.
 - **Built for Windows, macOS & Linux**: Zero external Python packages (standard library only), native `codex.exe` detection on Windows (x64 & ARM64), UTF-8 / locale (e.g. CP936/GBK) decoding fallback, and full process-tree cleanup across all OSes.

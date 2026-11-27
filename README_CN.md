@@ -20,13 +20,14 @@
 | `codex_list_models` | 模型发现 | 列出当前本地 Codex CLI 可用的 GPT 模型（如 `gpt-6.2-sol`、`gpt-6.2-astra`）及支持的推理强度（`low` → `ultra`），支持分页与 `include_hidden`。 |
 | `codex_exec` | 非交互执行 | 预先校验 `cwd`，支持自定义 `sandbox`、`-p` `profile`、`-i` `images`（多模态传图）、`ephemeral: false` + `session_id` 多轮续接，以及 `background: true` 后台运行。 |
 | `codex_review` | Git 差异审查 | 以严格 `read-only` 模式审查 `--uncommitted`、`--base <branch>`、`--commit <sha>` 或自定义 `focus` 审查重点，支持 `profile` 及审查期间工作区变更检测。 |
-| `codex_job_status` | 任务与会话查询 | 轮询后台任务（`wait_seconds`）、支持 `request_id` 幂等去重；不传 `job_id` 时同时列出可续接的 `activeSessions`。 |
+| `codex_job_status` | 任务与会话查询 | 轮询后台任务（`wait_seconds` 最高 `120s`，含 `idleSeconds` 与 `toolCallsCount`）、支持 `request_id` 幂等去重；不传 `job_id` 时可单次等待全部活跃任务并列出 `activeSessions`。 |
 | `codex_job_cancel` | 安全取消任务 | 取消排队中或运行中的任务并终止整棵子进程树（Windows 使用 Job Object，macOS/Linux 使用 `start_new_session` + `os.killpg`）。 |
 
 ## 核心特性
 
 - **配额与重置时间感知路由**：自动判断 5 小时或 7 天窗口是否临近重置且存在富余配额（`use_it_or_lose_it`）、充裕、适中或即将耗尽，帮助主力 Agent 自动决定该用 `gpt-6.2-astra`（`xhigh`/`high`）还是保守省着用。
-- **彻底规避 MCP 3 分钟超时**：深度代码审计或大 Diff 审查时传入 `background: true` 立即返回 `jobId`，随后通过 `codex_job_status(wait_seconds=25)` 安全轮询拿结果。
+- **彻底规避 MCP 3 分钟超时与高频轮询**：深度审计或大 Diff 审查传入 `background: true` 立即返回 `jobId`，支持 `codex_job_status(wait_seconds=120, include_results=true)` 单次合并等待多个后台任务。
+- **灵活超时与断点完整回收**：后台超时默认 `900s`/`1800s`（支持 `timeout_seconds: 0` 由 Agent 自主控制启停）；`background: true` 任务默认可续接（`ephemeral: false`），且超时/取消时直接返回完整的 `agentMessages` 与 `activityLog`，无需翻找本地日志。
 - **多模态传图与 Profile 复用**：通过 `codex_exec` 的 `images`（`-i`）直接把 UI 截图、报错截图喂给 GPT 看；通过 `profile`（`-p`）直接复用 `~/.codex` 中的个人配置档。
 - **多轮上下文续接与会话可见性**：首轮传 `ephemeral: false` 获取 `sessionId`，后续带上 `session_id` 即可保留完整上下文与 Prompt 缓存，随时可通过 `codex_job_status` 查看当前活跃会话。
 - **全平台深度兼容**：纯 Python 3.10+ 标准库（无需 `pip install`）；Windows 下自动直连原生 `codex.exe`（支持 x64 与 ARM64）并处理 UTF-8 / 本地编码（如 GBK/CP936）回退；全平台支持完整进程树清理。
