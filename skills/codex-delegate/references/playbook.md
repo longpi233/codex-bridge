@@ -2,7 +2,7 @@
 
 Quick reference of concrete MCP tool call arguments for `codex-bridge`.
 
-> **Antigravity-only note**: Wrap these arguments in `call_mcp_tool` with `"ServerName": "codex-bridge_codex-bridge"` and `"ToolName": "<tool>"`. In Claude Code, Cursor, WorkBuddy, or other MCP clients, invoke `<tool>` directly (or via its host-prefixed name such as `mcp__codex_bridge__<tool>`) with the JSON `Arguments` below.
+> **Tool-naming note**: Examples below use bare tool names (`codex_exec`, etc.). Clients may expose prefixed names derived from the host's configured server key (e.g., `mcp__codex-bridge__<tool>` in Claude Code/DSH or `mcp__codex_bridge__<tool>` in WorkBuddy). In Antigravity, wrap arguments in `call_mcp_tool` with `"ServerName": "codex-bridge_codex-bridge"` and `"ToolName": "<tool>"`.
 
 ## 1. Sync Quota First
 

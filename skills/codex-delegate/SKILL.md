@@ -10,7 +10,7 @@ description: >-
 
 Use this skill whenever you want a **second opinion from a GPT model**, need **cross-model verification** of code/plans/diffs, or want to **offload a bounded subtask** to Codex CLI.
 
-> **Antigravity-only note**: Antigravity namespaces this plugin's MCP server as `ServerName: "codex-bridge_codex-bridge"` (called via `call_mcp_tool`) and provides the `codex_worker` subagent. Other MCP clients either invoke the bare tool names directly or expose a server-prefixed tool name (e.g., `mcp__codex_bridge__<tool>` in WorkBuddy or `mcp__codex-bridge__<tool>` in Claude Code).
+> **Tool-naming note**: Skills always refer to bare MCP tool names (`codex_exec`, `codex_review`, etc.). Clients may expose prefixed names based on your configured server key (for example, `mcp__codex-bridge__<tool>` in Claude Code/DSH with key `codex-bridge`, or `mcp__codex_bridge__<tool>` in WorkBuddy with key `codex_bridge`). In Antigravity, the plugin server is mounted as `ServerName: "codex-bridge_codex-bridge"` (via `call_mcp_tool`) and provides the `codex_worker` subagent.
 
 ## 1. Always Check Quota & Reset Time First
 

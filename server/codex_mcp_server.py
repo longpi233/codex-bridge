@@ -1189,6 +1189,13 @@ def _summarize_activity_item(item: dict[str, Any]) -> tuple[dict[str, Any] | Non
     return None, False
 
 
+def _has_nonzero_usage(usage: Any) -> bool:
+    """Return True only when usage contains at least one positive token count."""
+    if not isinstance(usage, dict):
+        return False
+    return any(not isinstance(v, bool) and isinstance(v, (int, float)) and v > 0 for v in usage.values())
+
+
 def _run_codex_exec(
     cmd: list[str],
     prompt: str | None,
@@ -1414,8 +1421,10 @@ def _run_codex_exec(
             result["agentMessages"] = list(agent_messages)
         if (timed_out or cancelled or exit_code != 0) and activity_log:
             result["activityLog"] = list(activity_log)
-        if usage:
+        if _has_nonzero_usage(usage):
             result["usage"] = usage
+        elif isinstance(usage, dict):
+            result["usageUnavailable"] = True
         if rate_limits:
             result["rateLimits"] = {
                 "primary": _format_window(rate_limits.get("primary")),
@@ -1603,7 +1612,11 @@ def _launch_background_job(
         "kind": kind,
         "timeoutSeconds": timeout_seconds,
         **meta,
-        "note": "Job queued/started in background. Poll codex_job_status(job_id=..., wait_seconds=90) or omit job_id with include_results=true to monitor multiple jobs.",
+        "note": (
+            "Job queued/started in background. Poll codex_job_status(job_id=..., "
+            "wait_seconds=20-45 on 30-60s hosts or 90-120 on 180s+ hosts) or omit "
+            "job_id with include_results=true to monitor multiple jobs."
+        ),
     }
 
 

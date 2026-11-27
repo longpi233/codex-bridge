@@ -13,7 +13,8 @@ For runtime delegation instructions used in *other* workspaces, see `rules/AGENT
 - `skills/codex-delegate/SKILL.md` & `skills/codex-delegate/references/playbook.md` — Cross-agent delegation workflow & concrete call recipes (with Antigravity-only notes clearly marked).
 - `agents/codex_worker.md` — **Antigravity-exclusive** subagent persona (`codex_worker`).
 - `rules/AGENTS.md` — Cross-agent ultra-concise rule (injected into every turn while the plugin is enabled).
-- `README.md` & `README_CN.md` — Open-source documentation (English & Simplified Chinese) covering Antigravity, Claude Code, Cursor, Windsurf, and generic MCP stdio clients.
+- `scripts/pack_claude_plugin.py` — Builds gitignored `dist/codex-bridge.plugin` from a hardcoded file whitelist for Claude Desktop uploads.
+- `README.md` & `README_CN.md` — Open-source documentation (English & Simplified Chinese) covering Antigravity, Claude Code, Claude Desktop, DSH, Cursor, Windsurf, WorkBuddy, and generic MCP stdio clients.
 - `tests/test_codex_bridge.py` — Cross-OS unit, mock concurrency/cancel, and optional `--live` Codex CLI tests.
 
 ## Critical Runtime Invariants (Do Not Break)
@@ -37,6 +38,9 @@ For runtime delegation instructions used in *other* workspaces, see `rules/AGENT
    - `main()` dispatches tool calls concurrently via `ThreadPoolExecutor` with `SEND_LOCK` and `notifications/cancelled` handling; never regress to single-threaded blocking inside `main()`.
    - Missing `rateLimits` windows must return `tier: "unknown"` (never `"abundant"`).
    - Resuming a `session_id` validates bound `cwd` and refuses silently downgrading a `workspace-write` session to `read-only`.
+6. **Packaging & cross-host docs**:
+   - Any new runtime file required by the MCP server or `codex-delegate` skill must be added to `scripts/pack_claude_plugin.py`'s whitelist, or packaged `.plugin` uploads will ship incomplete. `dist/` is gitignored — never reference a prebuilt artifact path as tracked.
+   - Never assume a single host's call-timeout or tool-name prefix in server `note` strings, `SKILL.md`, or `playbook.md`. State the host prerequisite inline for any `wait_seconds` recommendation > `45`, keep skill tool names bare (`codex_exec`, etc.), and note that prefixes follow the host's configured server key.
 
 ## Verification & Reload Commands
 
@@ -46,17 +50,38 @@ Run offline tests (zero quota cost) after any edit to `server/codex_mcp_server.p
 python tests/test_codex_bridge.py
 ```
 
-Run live smoke tests (consumes minimal `gpt-6-luna` `low` quota):
+Run live smoke tests (consumes `~20k–110k` input tokens on `gpt-6-luna` `low` depending on whether tool calls trigger; skip when quota is tight):
 
 ```bash
 python tests/test_codex_bridge.py --live
 ```
 
-Reload only this MCP server in a running Antigravity instance:
+Standalone MCP stdio self-check (verifies the server starts and lists all 6 tools independent of any client; expects 2 JSON-RPC response lines):
+
+```powershell
+# PowerShell
+$p = @'
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":2,"method":"tools/list"}
+'@
+$p | python -u server/codex_mcp_server.py
+```
 
 ```bash
-curl -sf -H "Content-Type: application/json" \
-  -H "x-codeium-csrf-token: ${ANTIGRAVITY_CSRF_TOKEN}" \
-  -d '{"serverName": "codex-bridge_codex-bridge"}' \
-  "http://${ANTIGRAVITY_LS_ADDRESS:-localhost:5387}/exa.language_server_pb.LanguageServerService/RefreshMcpServers"
+# macOS / Linux / bash
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
+  '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+  | python -u server/codex_mcp_server.py
 ```
+
+Reload this MCP server after edits:
+
+| Client | How to reload |
+| :--- | :--- |
+| **Antigravity** | `curl -sf -H "Content-Type: application/json" -H "x-codeium-csrf-token: ${ANTIGRAVITY_CSRF_TOKEN}" -d '{"serverName": "codex-bridge_codex-bridge"}' "http://${ANTIGRAVITY_LS_ADDRESS:-localhost:5387}/exa.language_server_pb.LanguageServerService/RefreshMcpServers"` |
+| **DSH** | Save `~/.dsh/profiles/<profile>/cordis.patch.yml` (Loader hot-reloads without restarting DSH; modifying the entry triggers unmount/remount). |
+| **Claude Code / Desktop / Cursor / Windsurf** | Restart or reconnect the MCP client after editing `.py` files (running MCP subprocesses do not hot-reload Python modules). |
+
+> **Host timeout behavior**: A host-side tool-call timeout (e.g., DSH's default `60000` ms) cuts only the client RPC wait — it does **not** terminate the MCP stdio server or the background Codex job, which can still be collected via `codex_job_status`.

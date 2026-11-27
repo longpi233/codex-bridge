@@ -428,6 +428,7 @@ print(json.dumps({"type": "thread.started", "thread_id": "sess-bg-1"}))
 
             bg_res = mod.tool_exec({"prompt": "bg check", "cwd": bg_dir, "background": True})
             assert bg_res["resumable"] is True
+            assert "20-45" in bg_res.get("note", "") and "90-120" in bg_res.get("note", ""), bg_res
             done_bg = mod.tool_job_status({"job_id": bg_res["jobId"], "wait_seconds": 120})
             assert done_bg["status"] == "completed" and "toolCallsCount" in done_bg
 
@@ -521,7 +522,13 @@ time.sleep(10.0)
             if old_root is not None:
                 os.environ["CODEX_MANAGED_PACKAGE_ROOT"] = old_root
 
-    # 17. Codex binary resolution (native codex.exe on Windows when installed via npm)
+    # 17. Usage non-zero detection and Codex binary resolution
+    assert mod._has_nonzero_usage(None) is False
+    assert mod._has_nonzero_usage({}) is False
+    assert mod._has_nonzero_usage({"input_tokens": 0, "output_tokens": 0}) is False
+    assert mod._has_nonzero_usage({"input_tokens": 120, "output_tokens": 0}) is True
+
+    # 18. Codex binary resolution (native codex.exe on Windows when installed via npm)
     codex_bin, env = mod._resolve_codex_command()
     print("Resolved codex_bin:", codex_bin)
     if os.name == "nt" and "codex-win32" in codex_bin.lower():
