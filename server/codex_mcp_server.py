@@ -2137,9 +2137,9 @@ TOOLS: list[dict[str, Any]] = [
                 "timeout_seconds": {
                     "type": "integer",
                     "description": (
-                        "Backend execution timeout in seconds (180-3600, or 0 for no hard wall-clock limit; "
-                        "omit for defaults: 900s for low/medium, 1800s for high/xhigh/max/ultra). "
-                        "Do not pass small values like 30-120s."
+                        "Backend execution timeout in seconds (180-3600 for low/medium, 300-3600 for high+, "
+                        "or 0 for no hard wall-clock limit; omit for defaults: 900s for low/medium, 1800s for "
+                        "high/xhigh/max/ultra). Do not pass small values like 30-120s."
                     ),
                 },
                 "background": {
@@ -2206,9 +2206,9 @@ TOOLS: list[dict[str, Any]] = [
                 "timeout_seconds": {
                     "type": "integer",
                     "description": (
-                        "Backend execution timeout in seconds (180-3600, or 0 for no hard wall-clock limit; "
-                        "omit for defaults: 900s for low/medium, 1800s for high/xhigh/max/ultra). "
-                        "Do not pass small values like 30-120s."
+                        "Backend execution timeout in seconds (180-3600 for low/medium, 300-3600 for high+, "
+                        "or 0 for no hard wall-clock limit; omit for defaults: 900s for low/medium, 1800s for "
+                        "high/xhigh/max/ultra). Do not pass small values like 30-120s."
                     ),
                 },
                 "background": {

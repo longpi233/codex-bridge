@@ -16,17 +16,17 @@ A cross-platform, zero-dependency **MCP stdio server** and **native plugin (Anti
 
 | Tool | Purpose | Key Capabilities |
 | :--- | :--- | :--- |
-| `codex_quota_status` | Live quota & routing | Queries `codex app-server` for 5h/7d rate-limit windows, exact reset times, surplus pacing ratio, and an 8-tier routing recommendation (falls back to session logs if offline). |
-| `codex_list_models` | Model discovery | Lists available Codex GPT models (e.g., `gpt-6.2-sol`, `gpt-6.2-astra`) and supported reasoning efforts (`low` → `ultra`), with pagination and `include_hidden`. |
-| `codex_exec` | Prompt execution | Runs non-interactive tasks with upfront `cwd` check, configurable `sandbox`, `-p` `profile`, `-i` `images` (multimodal), `ephemeral: false` + `session_id` resume, and `background: true`. |
-| `codex_review` | Git diff review | Read-only review of `--uncommitted`, `--base <branch>`, `--commit <sha>`, or custom `focus` instructions, with optional `profile` and workspace-change detection. |
-| `codex_job_status` | Job & session tracking | Polls background jobs (`wait_seconds` up to `120s`, `idleSeconds`, `toolCallsCount`), deduplicates via `request_id`, waits on all active jobs when `job_id` is omitted, and lists `activeSessions`. |
+| `codex_quota_status` | Live quota & routing | Queries `codex app-server` for 5h/7d rate-limit windows, exact reset times, surplus pacing ratio, and a 10-tier routing recommendation (falls back to session logs if offline). |
+| `codex_list_models` | Model discovery | Lists available Codex GPT models (e.g., `gpt-6.2-sol`, `gpt-6.2-astra`) and supported reasoning efforts (`low` → `ultra`), automatically follows upstream pagination, and supports `include_hidden`. |
+| `codex_exec` | Prompt execution | Runs non-interactive tasks with upfront `cwd` check, configurable `sandbox`, `-p` `profile`, `-i` `images` (multimodal), `ephemeral: false` + `session_id` resume, and `background: true` (with idempotent `request_id`). |
+| `codex_review` | Git diff review | Read-only review of `--uncommitted`, `--base <branch>`, `--commit <sha>`, or custom `focus` instructions, with optional `profile`, idempotent `request_id`, and workspace-change detection. |
+| `codex_job_status` | Job & session tracking | Polls background jobs (`wait_seconds` up to `120s`, `idleSeconds`, `toolCallsCount`), waits on all active jobs when `job_id` is omitted, and lists `activeSessions`. |
 | `codex_job_cancel` | Safe cancellation | Cancels queued or running jobs and kills the full child process tree (Windows Job Object on Windows; `start_new_session` + `os.killpg` on macOS/Linux). |
 
 ## Key Features
 
 - **Quota- & Reset-Time-Aware Task Routing**: Knows when your 5-hour or 7-day quota is about to reset with unused balance (`use_it_or_lose_it`), abundant, moderate, or nearly exhausted—so your main agent picks the right model and reasoning effort automatically.
-- **No More 3-Minute MCP Timeouts**: Pass `background: true` for deep `gpt-6.2-astra` (`high`/`xhigh`) audits or large git diffs, then collect results in one batch with `codex_job_status(wait_seconds=120, include_results=true)`.
+- **No More 3-Minute MCP Timeouts**: Pass `background: true` for deep `gpt-6.2-astra` (`high`/`xhigh`) audits or large git diffs, then collect results in one batch with `codex_job_status(wait_seconds=90–120, include_results=true)` (or `20–45` on 30–60s hosts).
 - **Flexible Timeouts & Resumable Recovery**: Defaults to `900s`/`1800s` (or `timeout_seconds: 0` for agent-controlled runs). Background `codex_exec` jobs are resumable (`ephemeral: false`) by default, and timed-out/cancelled runs return full captured `agentMessages` and `activityLog` directly—no hunting through log files.
 - **Multimodal & Config Profile Support**: Attach screenshots or diagrams to `codex_exec` via `images` (`-i`), or pass `profile` (`-p`) to reuse your `~/.codex` config profiles.
 - **Multi-Turn Context Continuity**: Set `ephemeral: false` on the first turn to obtain a `sessionId`, resume it with full context and prompt caching, and inspect `activeSessions` anytime.
@@ -237,7 +237,7 @@ Use this option if Claude Desktop's GUI process does not inherit `python` in `PA
    }
    ```
    - **Windows**: Use forward slashes like `"C:/path/to/codex-bridge/server/codex_mcp_server.py"`, and prefer the full path to `python.exe` if GUI subprocesses do not inherit your terminal `PATH`.
-   - **Hosts with short per-call timeouts (30–60s, e.g. WorkBuddy / DSH)**: Raise the host's tool-call timeout in its MCP config if supported (e.g., `timeout` / `toolCallTimeoutMs`), or keep `wait_seconds` at `20`–`45` when polling `codex_job_status`. Note also that `jobId` is per-server-process, while `sessionId` (default for `background: true` jobs) is persisted to disk by Codex CLI and survives restarts.
+   - **Hosts with short per-call timeouts (30–60s, e.g. WorkBuddy / DSH)**: Raise the host's tool-call timeout in its own config format if supported (e.g., `timeout` in `mcp.json`, or `toolCallTimeoutMs` in Cordis/DSH patch config—DSH does not use a JSON `mcp.json`), or keep `wait_seconds` at `20`–`45` when polling `codex_job_status`. Note also that `jobId` is per-server-process, while `sessionId` (default for `background: true` jobs) is persisted to disk by Codex CLI and survives restarts.
    - **Tool naming note**: Clients like WorkBuddy expose MCP tools as `mcp__codex_bridge__<tool>` (using an underscore server key like `codex_bridge` avoids hyphen normalization issues).
 
 3. **Install the `codex-delegate` Skill & Rule** (recommended):

@@ -16,17 +16,17 @@
 
 | 工具名 | 用途 | 核心能力 |
 | :--- | :--- | :--- |
-| `codex_quota_status` | 实时配额与路由 | 查询 `codex app-server` 获取 5 小时/7 天双窗口限额、精确重置时间、配额盈余比，并生成 8 档模型与推理强度建议（离线时自动降级读取本地会话日志）。 |
-| `codex_list_models` | 模型发现 | 列出当前本地 Codex CLI 可用的 GPT 模型（如 `gpt-6.2-sol`、`gpt-6.2-astra`）及支持的推理强度（`low` → `ultra`），支持分页与 `include_hidden`。 |
-| `codex_exec` | 非交互执行 | 预先校验 `cwd`，支持自定义 `sandbox`、`-p` `profile`、`-i` `images`（多模态传图）、`ephemeral: false` + `session_id` 多轮续接，以及 `background: true` 后台运行。 |
-| `codex_review` | Git 差异审查 | 以严格 `read-only` 模式审查 `--uncommitted`、`--base <branch>`、`--commit <sha>` 或自定义 `focus` 审查重点，支持 `profile` 及审查期间工作区变更检测。 |
-| `codex_job_status` | 任务与会话查询 | 轮询后台任务（`wait_seconds` 最高 `120s`，含 `idleSeconds` 与 `toolCallsCount`）、支持 `request_id` 幂等去重；不传 `job_id` 时可单次等待全部活跃任务并列出 `activeSessions`。 |
+| `codex_quota_status` | 实时配额与路由 | 查询 `codex app-server` 获取 5 小时/7 天双窗口限额、精确重置时间、配额盈余比，并生成 10 档模型与推理强度建议（离线时自动降级读取本地会话日志）。 |
+| `codex_list_models` | 模型发现 | 列出当前本地 Codex CLI 可用的 GPT 模型（如 `gpt-6.2-sol`、`gpt-6.2-astra`）及支持的推理强度（`low` → `ultra`），自动翻页拉取全部上游模型，支持 `include_hidden`。 |
+| `codex_exec` | 非交互执行 | 预先校验 `cwd`，支持自定义 `sandbox`、`-p` `profile`、`-i` `images`（多模态传图）、`ephemeral: false` + `session_id` 多轮续接，以及 `background: true` 后台运行（支持 `request_id` 幂等去重）。 |
+| `codex_review` | Git 差异审查 | 以严格 `read-only` 模式审查 `--uncommitted`、`--base <branch>`、`--commit <sha>` 或自定义 `focus` 审查重点，支持 `profile`、`request_id` 幂等去重及审查期间工作区变更检测。 |
+| `codex_job_status` | 任务与会话查询 | 轮询后台任务（`wait_seconds` 最高 `120s`，含 `idleSeconds` 与 `toolCallsCount`）；不传 `job_id` 时可单次等待全部活跃任务并列出 `activeSessions`。 |
 | `codex_job_cancel` | 安全取消任务 | 取消排队中或运行中的任务并终止整棵子进程树（Windows 使用 Job Object，macOS/Linux 使用 `start_new_session` + `os.killpg`）。 |
 
 ## 核心特性
 
 - **配额与重置时间感知路由**：自动判断 5 小时或 7 天窗口是否临近重置且存在富余配额（`use_it_or_lose_it`）、充裕、适中或即将耗尽，帮助主力 Agent 自动决定该用 `gpt-6.2-astra`（`xhigh`/`high`）还是保守省着用。
-- **彻底规避 MCP 3 分钟超时与高频轮询**：深度审计或大 Diff 审查传入 `background: true` 立即返回 `jobId`，支持 `codex_job_status(wait_seconds=120, include_results=true)` 单次合并等待多个后台任务。
+- **彻底规避 MCP 3 分钟超时与高频轮询**：深度审计或大 Diff 审查传入 `background: true` 立即返回 `jobId`，支持 `codex_job_status(wait_seconds=90–120, include_results=true)`（30–60s 宿主用 `20–45`）单次合并等待多个后台任务。
 - **灵活超时与断点完整回收**：后台超时默认 `900s`/`1800s`（支持 `timeout_seconds: 0` 由 Agent 自主控制启停）；`background: true` 任务默认可续接（`ephemeral: false`），且超时/取消时直接返回完整的 `agentMessages` 与 `activityLog`，无需翻找本地日志。
 - **多模态传图与 Profile 复用**：通过 `codex_exec` 的 `images`（`-i`）直接把 UI 截图、报错截图喂给 GPT 看；通过 `profile`（`-p`）直接复用 `~/.codex` 中的个人配置档。
 - **多轮上下文续接与会话可见性**：首轮传 `ephemeral: false` 获取 `sessionId`，后续带上 `session_id` 即可保留完整上下文与 Prompt 缓存，随时可通过 `codex_job_status` 查看当前活跃会话。
@@ -237,7 +237,7 @@ Claude Desktop 已通过本地 `.plugin` / `.zip` 插件上传兼容同一套 `.
    }
    ```
    - **Windows 提示**：路径建议使用正斜杠如 `"C:/path/to/codex-bridge/server/codex_mcp_server.py"`；若 GUI 子进程找不到 `python`，请把 `"command"` 写为本机 `python.exe` 的完整路径。
-   - **针对短超时宿主（30–60s，如 WorkBuddy / DSH）**：建议在宿主 MCP 配置中调大单次工具调用超时（如 `timeout` / `toolCallTimeoutMs`），或将 `codex_job_status` 的 `wait_seconds` 控制在 `20`–`45` 秒。另请注意：`jobId` 仅在当前服务端进程生命周期内有效，而 `sessionId`（`background: true` 默认持久化）由 Codex CLI 落盘保存，重启后仍可续接。
+   - **针对短超时宿主（30–60s，如 WorkBuddy / DSH）**：若宿主支持，建议按对应配置方式调大单次工具调用超时（如 `mcp.json` 中的 `timeout`，或 Cordis/DSH 补丁层中的 `toolCallTimeoutMs`——DSH 不使用 JSON 式 `mcp.json`），否则请将 `codex_job_status` 的 `wait_seconds` 控制在 `20`–`45` 秒。另请注意：`jobId` 仅在当前服务端进程生命周期内有效，而 `sessionId`（`background: true` 默认持久化）由 Codex CLI 落盘保存，重启后仍可续接。
    - **工具名提示**：像 WorkBuddy 等客户端会以 `mcp__codex_bridge__<tool>` 暴露工具名，使用下划线 key `codex_bridge` 可避免连字符被规范化替换。
 
 3. **安装 `codex-delegate` Skill 与 Rule**（推荐）：

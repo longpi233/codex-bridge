@@ -2,7 +2,7 @@
 
 Quick reference of concrete MCP tool call arguments for `codex-bridge`.
 
-> **Antigravity-only note**: Wrap these arguments in `call_mcp_tool` with `"ServerName": "codex-bridge_codex-bridge"` and `"ToolName": "<tool>"`. In Claude Code, Cursor, or other MCP clients, invoke `<tool>` directly with the JSON `Arguments` below.
+> **Antigravity-only note**: Wrap these arguments in `call_mcp_tool` with `"ServerName": "codex-bridge_codex-bridge"` and `"ToolName": "<tool>"`. In Claude Code, Cursor, WorkBuddy, or other MCP clients, invoke `<tool>` directly (or via its host-prefixed name such as `mcp__codex_bridge__<tool>`) with the JSON `Arguments` below.
 
 ## 1. Sync Quota First
 
@@ -50,14 +50,14 @@ Tool: `codex_exec`
 ```
 
 2. Poll efficiently (`wait_seconds: 90`–`120` for `high`/`xhigh`/`max`/`gpt-6.2-astra` on 180s+ hosts; `20`–`45` for `low`/`medium` or on 30–60s hosts):
-   - **Single job**:
+   - **Single job** (`120` below assumes a 180s+ host; use `20`–`45` on 30–60s hosts):
      ```json
      {
        "job_id": "<jobId>",
        "wait_seconds": 120
      }
      ```
-   - **Multiple jobs (2+)**: **Omit `job_id`** to wait on all active jobs in a single call instead of alternating polls:
+   - **Multiple jobs (2+)**: **Omit `job_id`** to wait on all active jobs in a single call instead of alternating polls (`120` assumes a 180s+ host; use `20`–`45` on 30–60s hosts):
      ```json
      {
        "wait_seconds": 120,

@@ -452,7 +452,7 @@ print(json.dumps({"type": "thread.started", "thread_id": "sess-to-1"}), flush=Tr
 print(json.dumps({"type": "item.completed", "item": {"type": "command_execution", "command": "rg foo src/", "exit_code": 0, "aggregated_output": "src/a.py:10:foo"}}), flush=True)
 print(json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "Partial finding 1: checked src/a.py."}}), flush=True)
 print(json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "Partial finding 2: checking src/b.py next."}}), flush=True)
-time.sleep(5.0)
+time.sleep(10.0)
 """,
         )
         old_cb = os.environ.get("CODEX_BIN")
@@ -461,7 +461,7 @@ time.sleep(5.0)
             to_res = mod._run_codex_exec(
                 [fc_to, "exec", "-C", to_dir, "-s", "read-only"],
                 prompt="audit",
-                timeout_seconds=1,
+                timeout_seconds=3,
                 session_meta={"cwd": to_dir, "sandbox": "read-only", "model": "gpt-6.2-astra"},
             )
             assert to_res["timedOut"] is True and to_res["exitCode"] == -1, to_res
@@ -734,6 +734,11 @@ print(json.dumps({"type": "thread.started", "thread_id": "fake-exec-1"}))
         init_res = wait_id(1)["result"]
         assert init_res["serverInfo"]["name"] == "codex-bridge"
         assert init_res["protocolVersion"] == "2025-06-18", init_res
+
+        send({"jsonrpc": "2.0", "id": 103, "method": "initialize", "params": {"protocolVersion": "2099-01-01"}})
+        assert wait_id(103)["result"]["protocolVersion"] == "2024-11-05"
+        send({"jsonrpc": "2.0", "id": 104, "method": "initialize", "params": {}})
+        assert wait_id(104)["result"]["protocolVersion"] == "2024-11-05"
 
         send({"jsonrpc": "2.0", "id": 101, "method": "resources/list", "params": {}})
         assert wait_id(101)["result"] == {"resources": []}
