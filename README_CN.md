@@ -145,7 +145,26 @@ Antigravity 会把 **MCP 服务、Skill（`codex-delegate`）、Rule（`rules/AG
 
 ### 3. Claude Desktop（macOS / Windows 桌面客户端）
 
-> **重要区分**：**Claude Desktop（桌面端应用）** 与 **Claude Code（CLI 终端工具）** 的配置体系完全独立。Claude Desktop **不支持** `claude mcp add` 或 `.claude-plugin/` 插件目录，必须编辑 `claude_desktop_config.json` 并填写绝对路径（不能使用 `${PLUGIN_ROOT}` 或 `${CLAUDE_PLUGIN_ROOT}`）。
+Claude Desktop 已通过本地 `.plugin` / `.zip` 插件上传兼容同一套 `.claude-plugin/plugin.json` + `.mcp.json`（本地 `stdio` + `${CLAUDE_PLUGIN_ROOT}`）+ `skills/` 规范；同时也保留手动配置 `claude_desktop_config.json` 的方式。
+
+#### 方式 A：上传 `.plugin` 插件包（推荐，MCP + Skill 一步到位）
+
+1. **克隆仓库并打入干净的 Claude 插件包**：
+   ```bash
+   git clone https://github.com/longpi233/codex-bridge.git
+   cd codex-bridge
+   python scripts/pack_claude_plugin.py
+   ```
+   该脚本会生成 `dist/codex-bridge.plugin`，仅包含 `.claude-plugin/plugin.json`、`.mcp.json`、`server/codex_mcp_server.py`、`skills/codex-delegate/` 与 `LICENSE`（自动排除 `agents/codex_worker.md` 等 Antigravity 专用文件）。
+
+2. **在 Claude Desktop 中上传**：
+   - 打开 **Settings…（设置）** → **Customize（自定义）** → **Plugins（插件）** → **Upload local plugin**。
+   - 拖入或选择 `dist/codex-bridge.plugin`。
+   - 上传启用后，会一步自动注册基于本地 `stdio`（`${CLAUDE_PLUGIN_ROOT}`）的全部 6 个 MCP 工具并安装 `codex-delegate` Skill。
+
+#### 方式 B：手动配置 `claude_desktop_config.json`（适合自定义 `python` 路径 / `env` 或仅装 MCP）
+
+如果桌面端未继承终端 `PATH` 导致找不到 `python`，或需要显式指定 `CODEX_BIN` / `CODEX_HOME` / `CODEX_DEFAULT_MODEL` 等环境变量、或仅想接入 MCP 而不装插件包，可使用此方式：
 
 1. **克隆仓库到本地**：
    ```bash

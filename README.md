@@ -145,7 +145,26 @@ Antigravity loads the **MCP server, Skill (`codex-delegate`), Rule (`rules/AGENT
 
 ### 3. Claude Desktop (macOS / Windows Desktop App)
 
-> **Important**: **Claude Desktop** is a separate GUI app from **Claude Code CLI**. It does **not** use `claude mcp add` or `.claude-plugin/` — you must configure `claude_desktop_config.json` directly using absolute paths (no `${PLUGIN_ROOT}` or `${CLAUDE_PLUGIN_ROOT}`).
+Claude Desktop supports the same `.claude-plugin/plugin.json` + `.mcp.json` (`stdio` + `${CLAUDE_PLUGIN_ROOT}`) + `skills/` format via local `.plugin`/`.zip` uploads, as well as manual `claude_desktop_config.json` setup.
+
+#### Option A: Upload `.plugin` Package (Recommended — MCP + Skill together)
+
+1. **Clone the repository and build the clean plugin package**:
+   ```bash
+   git clone https://github.com/longpi233/codex-bridge.git
+   cd codex-bridge
+   python scripts/pack_claude_plugin.py
+   ```
+   This generates `dist/codex-bridge.plugin` containing only `.claude-plugin/plugin.json`, `.mcp.json`, `server/codex_mcp_server.py`, `skills/codex-delegate/`, and `LICENSE` (excluding Antigravity-only files such as `agents/codex_worker.md`).
+
+2. **Upload in Claude Desktop**:
+   - Open **Settings…** → **Customize** → **Plugins** → **Upload local plugin**.
+   - Drag or select `dist/codex-bridge.plugin`.
+   - This registers all 6 MCP tools via local `stdio` (`${CLAUDE_PLUGIN_ROOT}`) and installs the `codex-delegate` skill in one step.
+
+#### Option B: Manual `claude_desktop_config.json` (Custom `python` path / `env` or MCP only)
+
+Use this option if Claude Desktop's GUI process does not inherit `python` in `PATH`, or if you want to pass custom `env` variables (`CODEX_BIN`, `CODEX_HOME`, `CODEX_DEFAULT_MODEL`) or install only the MCP server without the plugin bundle.
 
 1. **Clone the repository**:
    ```bash
@@ -157,7 +176,7 @@ Antigravity loads the **MCP server, Skill (`codex-delegate`), Rule (`rules/AGENT
      - **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
      - **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
 
-3. **Add `codex-bridge` under `mcpServers`** (use the full absolute path to `python` as well as `codex_mcp_server.py`, since GUI apps often do not inherit your shell `PATH`):
+3. **Add `codex-bridge` under `mcpServers`** (use absolute paths for both `python` and `codex_mcp_server.py` since GUI apps often do not inherit your shell `PATH`):
    - **Windows**:
      ```json
      {
