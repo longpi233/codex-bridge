@@ -154,9 +154,16 @@ Antigravity 会把 **MCP 服务、Skill（`codex-delegate`）、Rule（`rules/AG
 
 ### 3. Claude Desktop（macOS / Windows 桌面客户端）
 
-Claude Desktop 已通过本地 `.plugin` / `.zip` 插件上传兼容同一套 `.claude-plugin/plugin.json` + `.mcp.json`（本地 `stdio` + `${CLAUDE_PLUGIN_ROOT}`）+ `skills/` 规范；同时也保留手动配置 `claude_desktop_config.json` 的方式。
+Claude Desktop 支持直接通过 GitHub 仓库添加插件市场（**Add marketplace**）、上传本地干净的 `.plugin` / `.zip` 插件包，以及手动配置 `claude_desktop_config.json` 三种接入方式。
 
-#### 方式 A：上传 `.plugin` 插件包（推荐，MCP + Skill 一步到位）
+#### 方式 A：通过 GitHub 市场同步安装（最快 — 无需本地克隆或打包）
+
+1. 打开 Claude Desktop，进入 **Customize（自定义）** → **Plugins（插件）** → **+ Add** → **Add marketplace**。
+2. 在 **URL** 栏输入 `longpi233/codex-bridge`（或 `https://github.com/longpi233/codex-bridge.git`），点击 **Sync**。
+3. 同步完成后安装 `codex-bridge`，即可一步启用全部 6 个基于 `${CLAUDE_PLUGIN_ROOT}` 的 MCP 工具并安装 `codex-delegate` 技能。
+- *（注：与 Claude Code 的市场安装一致，此方式同样会扫入包含 Antigravity 专属 frontmatter 的 `agents/codex_worker.md`——请直接通过主 Agent 搭配 `codex-delegate` 调用工具，不要调用 `codex_worker`。若因桌面端未继承 `PATH` 中的 `python` 导致 6 个工具未出现，请改用下方**方式 C**。）*
+
+#### 方式 B：上传本地 `.plugin` 插件包（纯净包，不含 Antigravity 专属文件）
 
 1. **克隆仓库并打入干净的 Claude 插件包**：
    ```bash
@@ -170,9 +177,9 @@ Claude Desktop 已通过本地 `.plugin` / `.zip` 插件上传兼容同一套 `.
    - 打开 **Settings…（设置）** → **Customize（自定义）** → **Plugins（插件）** → **Upload local plugin**。
    - 拖入或选择 `dist/codex-bridge.plugin`。
    - 上传启用后，会一步自动注册基于本地 `stdio`（`${CLAUDE_PLUGIN_ROOT}`）的全部 6 个 MCP 工具并安装 `codex-delegate` Skill。
-   - **若 6 个工具未出现**：插件包内的 `.mcp.json` 使用裸 `"command": "python"`；如果桌面端 GUI 进程未继承终端 `PATH`（或命中 Windows Store 的 `python` 存根），请改用下方**方式 B** 并填写 `python.exe` / `python3` 的绝对路径。
+   - **若 6 个工具未出现**：插件包内的 `.mcp.json` 使用裸 `"command": "python"`；如果桌面端 GUI 进程未继承终端 `PATH`（或命中 Windows Store 的 `python` 存根），请改用下方**方式 C** 并填写 `python.exe` / `python3` 的绝对路径。
 
-#### 方式 B：手动配置 `claude_desktop_config.json`（适合自定义 `python` 路径 / `env` 或仅装 MCP）
+#### 方式 C：手动配置 `claude_desktop_config.json`（适合自定义 `python` 路径 / `env` 或仅装 MCP）
 
 如果桌面端未继承终端 `PATH` 导致找不到 `python`，或需要显式指定 `CODEX_BIN` / `CODEX_HOME` / `CODEX_DEFAULT_MODEL` 等环境变量、或仅想接入 MCP 而不装插件包，可使用此方式：
 

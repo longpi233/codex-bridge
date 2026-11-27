@@ -154,9 +154,16 @@ Antigravity loads the **MCP server, Skill (`codex-delegate`), Rule (`rules/AGENT
 
 ### 3. Claude Desktop (macOS / Windows Desktop App)
 
-Claude Desktop supports the same `.claude-plugin/plugin.json` + `.mcp.json` (`stdio` + `${CLAUDE_PLUGIN_ROOT}`) + `skills/` format via local `.plugin`/`.zip` uploads, as well as manual `claude_desktop_config.json` setup.
+Claude Desktop supports adding this repository directly as a GitHub plugin marketplace (**Add marketplace**), uploading a clean local `.plugin`/`.zip` archive, or configuring `claude_desktop_config.json` manually.
 
-#### Option A: Upload `.plugin` Package (Recommended — MCP + Skill together)
+#### Option A: Add GitHub Marketplace (Fastest — No Local Clone or Packaging)
+
+1. Open Claude Desktop and go to **Customize** → **Plugins** → **+ Add** → **Add marketplace**.
+2. Enter `longpi233/codex-bridge` (or `https://github.com/longpi233/codex-bridge.git`) under **URL** and click **Sync**.
+3. Install `codex-bridge` from the synced marketplace to enable all 6 MCP tools (`${CLAUDE_PLUGIN_ROOT}`) and install the `codex-delegate` skill in one step.
+- *(Note: Like Claude Code's marketplace install, this also registers `agents/codex_worker.md` with Antigravity-only frontmatter — simply use the main agent with `codex-delegate` instead of invoking `codex_worker`. If the 6 tools do not appear because the Desktop GUI process does not inherit `python` in `PATH`, switch to **Option C** below.)*
+
+#### Option B: Upload `.plugin` Package (Clean Local Bundle Without Antigravity Files)
 
 1. **Clone the repository and build the clean plugin package**:
    ```bash
@@ -170,9 +177,9 @@ Claude Desktop supports the same `.claude-plugin/plugin.json` + `.mcp.json` (`st
    - Open **Settings…** → **Customize** → **Plugins** → **Upload local plugin**.
    - Drag or select `dist/codex-bridge.plugin`.
    - This registers all 6 MCP tools via local `stdio` (`${CLAUDE_PLUGIN_ROOT}`) and installs the `codex-delegate` skill in one step.
-   - **If the 6 tools do not appear**: `.mcp.json` launches bare `"command": "python"`. If the Desktop GUI process does not inherit your shell `PATH` (or hits the Windows Microsoft Store `python` stub), switch to **Option B** below and specify an absolute `python.exe` / `python3` path.
+   - **If the 6 tools do not appear**: `.mcp.json` launches bare `"command": "python"`. If the Desktop GUI process does not inherit your shell `PATH` (or hits the Windows Microsoft Store `python` stub), switch to **Option C** below and specify an absolute `python.exe` / `python3` path.
 
-#### Option B: Manual `claude_desktop_config.json` (Custom `python` path / `env` or MCP only)
+#### Option C: Manual `claude_desktop_config.json` (Custom `python` path / `env` or MCP only)
 
 Use this option if Claude Desktop's GUI process does not inherit `python` in `PATH`, or if you want to pass custom `env` variables (`CODEX_BIN`, `CODEX_HOME`, `CODEX_DEFAULT_MODEL`) or install only the MCP server without the plugin bundle.
 
