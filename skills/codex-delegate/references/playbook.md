@@ -49,7 +49,7 @@ Tool: `codex_exec`
 }
 ```
 
-2. Poll efficiently (`wait_seconds: 90`–`120` for `high`/`xhigh`/`astra`; `30`–`45` for `low`/`medium`):
+2. Poll efficiently (`wait_seconds: 90`–`120` for `high`/`xhigh`/`max`/`gpt-6.2-astra` on 180s+ hosts; `20`–`45` for `low`/`medium` or on 30–60s hosts):
    - **Single job**:
      ```json
      {

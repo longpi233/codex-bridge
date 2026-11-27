@@ -65,9 +65,14 @@ Choose the setup guide for your AI client below:
 Antigravity loads the **MCP server, Skill (`codex-delegate`), Rule (`rules/AGENTS.md`), and Subagent (`codex_worker`)** automatically as a single bundle.
 
 - **Option A — Clone directly into Antigravity's plugins directory** (simplest):
-  ```bash
-  git clone https://github.com/longpi233/codex-bridge.git ~/.gemini/config/plugins/codex-bridge
-  ```
+  - **macOS / Linux / PowerShell**:
+    ```bash
+    git clone https://github.com/longpi233/codex-bridge.git ~/.gemini/config/plugins/codex-bridge
+    ```
+  - **Windows (`cmd`)**:
+    ```cmd
+    git clone https://github.com/longpi233/codex-bridge.git "%USERPROFILE%\.gemini\config\plugins\codex-bridge"
+    ```
 
 - **Option B — Clone to a custom directory and register it** (recommended if you keep repos elsewhere):
   1. Clone the repository to your preferred location:
@@ -130,21 +135,21 @@ Antigravity loads the **MCP server, Skill (`codex-delegate`), Rule (`rules/AGENT
 
 ---
 
-### 3. Cursor, Windsurf & Other MCP Clients (MCP Server + Skill & Rule)
+### 3. Cursor, Windsurf, WorkBuddy & Other MCP Clients (MCP Server + Skill & Rule)
 
-> Again, do **not** copy `mcp_config.json` with `${PLUGIN_ROOT}`. Use an absolute path to `server/codex_mcp_server.py`.
+> Again, do **not** copy `mcp_config.json` with `${PLUGIN_ROOT}`. Use an absolute path to `server/codex_mcp_server.py` (and for GUI apps whose `PATH` differs from your terminal, prefer the full path to `python`).
 
 1. **Clone the repository**:
    ```bash
    git clone https://github.com/longpi233/codex-bridge.git /path/to/codex-bridge
    ```
 
-2. **Add `codex-bridge` to your client's MCP configuration** (e.g. `~/.cursor/mcp.json`, `.cursor/mcp.json`, or Windsurf's `mcp_config.json`):
+2. **Add `codex-bridge` to your client's MCP configuration** (e.g. `~/.cursor/mcp.json`, `.cursor/mcp.json`, `~/.workbuddy/mcp.json`, or Windsurf's `mcp_config.json`):
 
    ```json
    {
      "mcpServers": {
-       "codex-bridge": {
+       "codex_bridge": {
          "command": "python",
          "args": [
            "-u",
@@ -154,13 +159,15 @@ Antigravity loads the **MCP server, Skill (`codex-delegate`), Rule (`rules/AGENT
      }
    }
    ```
-   *(On Windows, use forward slashes like `"C:/path/to/codex-bridge/server/codex_mcp_server.py"`.)*
+   - **Windows**: Use forward slashes like `"C:/path/to/codex-bridge/server/codex_mcp_server.py"`, and prefer the full path to `python.exe` if GUI subprocesses do not inherit your terminal `PATH`.
+   - **Hosts with short per-call timeouts (30–60s, e.g. WorkBuddy / DSH)**: Raise the host's tool-call timeout in its MCP config if supported (e.g., `timeout` / `toolCallTimeoutMs`), or keep `wait_seconds` at `20`–`45` when polling `codex_job_status`. Note also that `jobId` is per-server-process, while `sessionId` (default for `background: true` jobs) is persisted to disk by Codex CLI and survives restarts.
+   - **Tool naming note**: Clients like WorkBuddy expose MCP tools as `mcp__codex_bridge__<tool>` (using an underscore server key like `codex_bridge` avoids hyphen normalization issues).
 
 3. **Install the `codex-delegate` Skill & Rule** (recommended):
    - **Skill**: Copy or symlink `skills/codex-delegate/` into your agent's skill directory:
      - Standard cross-agent path (Cursor / Pi / Codex / etc.): `.agents/skills/codex-delegate` or `~/.agents/skills/codex-delegate`
-     - Cursor-specific path: `.cursor/skills/codex-delegate` or `~/.cursor/skills/codex-delegate`
-   - **Rule**: Copy [`rules/AGENTS.md`](./rules/AGENTS.md) into your project's `AGENTS.md` (or your client's rules directory, e.g. `.cursor/rules/`).
+     - Cursor / WorkBuddy paths: `.cursor/skills/codex-delegate`, `~/.workbuddy/skills/codex-delegate`, or `.codebuddy/skills/codex-delegate`
+   - **Rule**: Copy [`rules/AGENTS.md`](./rules/AGENTS.md) into your project's `AGENTS.md` (or your client's rules directory, e.g. `.cursor/rules/` or `.codebuddy/rules/`).
 
 ---
 
@@ -178,6 +185,7 @@ Once connected, try asking your main agent:
 | :--- | :--- |
 | `CODEX_BIN` | Explicit path to the `codex` / `codex.exe` binary if not auto-detected from `PATH`. |
 | `CODEX_HOME` | Custom Codex state/auth directory (defaults to `~/.codex`). |
+| `CODEX_DEFAULT_MODEL` | Optional fallback model id when `model` and `profile` are omitted (if unset, Codex CLI uses its own configured default). |
 
 ## Running Tests
 

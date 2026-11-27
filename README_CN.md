@@ -65,9 +65,14 @@
 Antigravity 会把 **MCP 服务、Skill（`codex-delegate`）、Rule（`rules/AGENTS.md`）以及子代理（`codex_worker`）** 作为一个完整插件自动全部加载。
 
 - **方式 A — 直接克隆到 Antigravity 插件目录**（最简单）：
-  ```bash
-  git clone https://github.com/longpi233/codex-bridge.git ~/.gemini/config/plugins/codex-bridge
-  ```
+  - **macOS / Linux / PowerShell**：
+    ```bash
+    git clone https://github.com/longpi233/codex-bridge.git ~/.gemini/config/plugins/codex-bridge
+    ```
+  - **Windows（`cmd`）**：
+    ```cmd
+    git clone https://github.com/longpi233/codex-bridge.git "%USERPROFILE%\.gemini\config\plugins\codex-bridge"
+    ```
 
 - **方式 B — 克隆到自定义目录并注册**（推荐习惯集中管理仓库的开发者使用）：
   1. 先将仓库克隆到你习惯的目录：
@@ -130,21 +135,21 @@ Antigravity 会把 **MCP 服务、Skill（`codex-delegate`）、Rule（`rules/AG
 
 ---
 
-### 3. Cursor、Windsurf 及其他 MCP 客户端（配置 MCP + 安装 Skill 与 Rule）
+### 3. Cursor、Windsurf、WorkBuddy 及其他 MCP 客户端（配置 MCP + 安装 Skill 与 Rule）
 
-> 同样**不要**直接复制包含 `${PLUGIN_ROOT}` 的 `mcp_config.json`，请填写 `server/codex_mcp_server.py` 的绝对路径。
+> 同样**不要**直接复制包含 `${PLUGIN_ROOT}` 的 `mcp_config.json`，请填写 `server/codex_mcp_server.py` 的绝对路径（GUI 客户端如果与终端 `PATH` 不一致，建议直接填写 `python` 可执行文件的绝对路径）。
 
 1. **克隆仓库**：
    ```bash
    git clone https://github.com/longpi233/codex-bridge.git /path/to/codex-bridge
    ```
 
-2. **在客户端的 MCP 配置文件中添加 `codex-bridge`**（例如 `~/.cursor/mcp.json`、`.cursor/mcp.json` 或 Windsurf 的 `mcp_config.json`）：
+2. **在客户端的 MCP 配置文件中添加 `codex-bridge`**（例如 `~/.cursor/mcp.json`、`.cursor/mcp.json`、`~/.workbuddy/mcp.json` 或 Windsurf 的 `mcp_config.json`）：
 
    ```json
    {
      "mcpServers": {
-       "codex-bridge": {
+       "codex_bridge": {
          "command": "python",
          "args": [
            "-u",
@@ -154,13 +159,15 @@ Antigravity 会把 **MCP 服务、Skill（`codex-delegate`）、Rule（`rules/AG
      }
    }
    ```
-   *（Windows 下建议使用正斜杠路径，如 `"C:/path/to/codex-bridge/server/codex_mcp_server.py"`。）*
+   - **Windows 提示**：路径建议使用正斜杠如 `"C:/path/to/codex-bridge/server/codex_mcp_server.py"`；若 GUI 子进程找不到 `python`，请把 `"command"` 写为本机 `python.exe` 的完整路径。
+   - **针对短超时宿主（30–60s，如 WorkBuddy / DSH）**：建议在宿主 MCP 配置中调大单次工具调用超时（如 `timeout` / `toolCallTimeoutMs`），或将 `codex_job_status` 的 `wait_seconds` 控制在 `20`–`45` 秒。另请注意：`jobId` 仅在当前服务端进程生命周期内有效，而 `sessionId`（`background: true` 默认持久化）由 Codex CLI 落盘保存，重启后仍可续接。
+   - **工具名提示**：像 WorkBuddy 等客户端会以 `mcp__codex_bridge__<tool>` 暴露工具名，使用下划线 key `codex_bridge` 可避免连字符被规范化替换。
 
 3. **安装 `codex-delegate` Skill 与 Rule**（推荐）：
    - **安装 Skill**：将 `skills/codex-delegate/` 复制或软链接到对应客户端的技能目录：
      - 通用跨 Agent 规范路径（Cursor / Pi / Codex 等）：`.agents/skills/codex-delegate` 或 `~/.agents/skills/codex-delegate`
-     - Cursor 专用路径：`.cursor/skills/codex-delegate` 或 `~/.cursor/skills/codex-delegate`
-   - **安装 Rule**：将 [`rules/AGENTS.md`](./rules/AGENTS.md) 合并到项目根目录的 `AGENTS.md`（或客户端规则目录，如 `.cursor/rules/`）。
+     - Cursor / WorkBuddy 路径：`.cursor/skills/codex-delegate`、`~/.workbuddy/skills/codex-delegate` 或 `.codebuddy/skills/codex-delegate`
+   - **安装 Rule**：将 [`rules/AGENTS.md`](./rules/AGENTS.md) 合并到项目根目录的 `AGENTS.md`（或客户端规则目录，如 `.cursor/rules/`、`.codebuddy/rules/`）。
 
 ---
 
@@ -178,6 +185,7 @@ Antigravity 会把 **MCP 服务、Skill（`codex-delegate`）、Rule（`rules/AG
 | :--- | :--- |
 | `CODEX_BIN` | 当 `codex` / `codex.exe` 未在 `PATH` 中自动识别时，显式指定其可执行文件路径。 |
 | `CODEX_HOME` | 自定义 Codex 状态与认证目录（默认为 `~/.codex`）。 |
+| `CODEX_DEFAULT_MODEL` | 当未传 `model` 且未设 `profile` 时的可选默认模型 ID（未配置则直接交由 Codex CLI 自身默认模型决定）。 |
 
 ## 运行测试
 

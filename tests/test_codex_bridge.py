@@ -475,7 +475,53 @@ time.sleep(5.0)
             else:
                 os.environ["CODEX_BIN"] = old_cb
 
-    # 16. Codex binary resolution (native codex.exe on Windows when installed via npm)
+    # 16. _default_model, _filter_stderr_noise, and CODEX_BIN npm env injection
+    old_def_model = os.environ.pop("CODEX_DEFAULT_MODEL", None)
+    try:
+        assert mod._default_model() is None
+        os.environ["CODEX_DEFAULT_MODEL"] = " gpt-6.2-sol "
+        assert mod._default_model() == "gpt-6.2-sol"
+    finally:
+        if old_def_model is None:
+            os.environ.pop("CODEX_DEFAULT_MODEL", None)
+        else:
+            os.environ["CODEX_DEFAULT_MODEL"] = old_def_model
+
+    filtered_err = mod._filter_stderr_noise(
+        "WARNING: failed to clean up stale arg0 temp dirs: 拒绝访问。 (os error 5)\n"
+        "WARNING: proceeding, even though we could not create PATH aliases: 拒绝访问。\n"
+        "ERROR: real failure happened"
+    )
+    assert filtered_err == "ERROR: real failure happened", filtered_err
+
+    with tempfile.TemporaryDirectory() as npm_tmp:
+        pkg_root = os.path.join(npm_tmp, "node_modules", "@openai", "codex")
+        fake_exe = os.path.join(
+            pkg_root, "node_modules", "@openai", "codex-win32-x64", "vendor", "x86_64-pc-windows-msvc", "bin", "codex.exe"
+        )
+        os.makedirs(os.path.dirname(fake_exe), exist_ok=True)
+        with open(fake_exe, "wb") as f:
+            f.write(b"")
+        old_cb = os.environ.get("CODEX_BIN")
+        old_mgr = os.environ.pop("CODEX_MANAGED_BY_NPM", None)
+        old_root = os.environ.pop("CODEX_MANAGED_PACKAGE_ROOT", None)
+        os.environ["CODEX_BIN"] = fake_exe
+        try:
+            resolved_bin, resolved_env = mod._resolve_codex_command()
+            assert resolved_bin == fake_exe
+            assert resolved_env.get("CODEX_MANAGED_BY_NPM") == "1"
+            assert resolved_env.get("CODEX_MANAGED_PACKAGE_ROOT") == os.path.abspath(pkg_root)
+        finally:
+            if old_cb is None:
+                os.environ.pop("CODEX_BIN", None)
+            else:
+                os.environ["CODEX_BIN"] = old_cb
+            if old_mgr is not None:
+                os.environ["CODEX_MANAGED_BY_NPM"] = old_mgr
+            if old_root is not None:
+                os.environ["CODEX_MANAGED_PACKAGE_ROOT"] = old_root
+
+    # 17. Codex binary resolution (native codex.exe on Windows when installed via npm)
     codex_bin, env = mod._resolve_codex_command()
     print("Resolved codex_bin:", codex_bin)
     if os.name == "nt" and "codex-win32" in codex_bin.lower():
@@ -684,8 +730,15 @@ print(json.dumps({"type": "thread.started", "thread_id": "fake-exec-1"}))
                 time.sleep(0.02)
             raise TimeoutError(f"Timeout waiting for id={mid}")
 
-        send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
-        assert wait_id(1)["result"]["serverInfo"]["name"] == "codex-bridge"
+        send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}})
+        init_res = wait_id(1)["result"]
+        assert init_res["serverInfo"]["name"] == "codex-bridge"
+        assert init_res["protocolVersion"] == "2025-06-18", init_res
+
+        send({"jsonrpc": "2.0", "id": 101, "method": "resources/list", "params": {}})
+        assert wait_id(101)["result"] == {"resources": []}
+        send({"jsonrpc": "2.0", "id": 102, "method": "prompts/list", "params": {}})
+        assert wait_id(102)["result"] == {"prompts": []}
 
         send({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "codex_exec", "arguments": {"prompt": "slow", "background": True, "request_id": "req-1"}}})
         send({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "codex_exec", "arguments": {"prompt": "slow", "background": True, "request_id": "req-1"}}})

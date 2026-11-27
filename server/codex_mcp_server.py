@@ -39,6 +39,12 @@ SERVER_INFO = {
     "version": "0.2.0",
 }
 PROTOCOL_VERSION = "2024-11-05"
+SUPPORTED_PROTOCOL_VERSIONS = (
+    "2024-11-05",
+    "2025-03-26",
+    "2025-06-18",
+    "2025-11-25",
+)
 
 MAX_CONCURRENT_JOBS = 4
 MAX_QUEUED_JOBS = 20
@@ -108,11 +114,64 @@ def _codex_home() -> str:
     return os.environ.get("CODEX_HOME") or os.path.join(os.path.expanduser("~"), ".codex")
 
 
+def _default_model() -> str | None:
+    val = os.environ.get("CODEX_DEFAULT_MODEL")
+    if isinstance(val, str) and val.strip():
+        return val.strip()
+    return None
+
+
+def _is_benign_codex_warning(line: str) -> bool:
+    low = line.lower()
+    return (
+        "failed to clean up stale arg0 temp dirs" in low
+        or "could not create path aliases" in low
+    )
+
+
+def _filter_stderr_noise(text: str) -> str:
+    if not text:
+        return ""
+    kept = [ln for ln in text.splitlines() if not _is_benign_codex_warning(ln)]
+    return "\n".join(kept).strip()
+
+
+def _maybe_inject_npm_env(binary_path: str, env: dict[str, str]) -> None:
+    """Populate npm-managed Codex env vars when binary_path points inside `@openai/codex*`."""
+    cur = os.path.dirname(os.path.abspath(binary_path))
+    saw_openai_codex = False
+    pkg_root: str | None = None
+    while True:
+        base = os.path.basename(cur).lower()
+        parent = os.path.dirname(cur)
+        parent_base = os.path.basename(parent).lower()
+        grandparent = os.path.dirname(parent)
+        grandparent_base = os.path.basename(grandparent).lower()
+        if parent_base == "@openai" and grandparent_base == "node_modules":
+            if base == "codex":
+                saw_openai_codex = True
+                pkg_root = cur
+                break
+            if base.startswith("codex-"):
+                saw_openai_codex = True
+                sibling = os.path.join(parent, "codex")
+                if os.path.isdir(sibling):
+                    pkg_root = sibling
+        if parent == cur:
+            break
+        cur = parent
+    if saw_openai_codex:
+        env.setdefault("CODEX_MANAGED_BY_NPM", "1")
+        if pkg_root and os.path.isdir(pkg_root):
+            env.setdefault("CODEX_MANAGED_PACKAGE_ROOT", pkg_root)
+
+
 def _resolve_codex_command() -> tuple[str, dict[str, str]]:
     """Resolve native `codex.exe` when possible to skip `.cmd` + `node.exe` wrapper overhead."""
     env = os.environ.copy()
     override = env.get("CODEX_BIN")
     if override and os.path.isfile(override):
+        _maybe_inject_npm_env(override, env)
         return override, env
 
     which_path = shutil.which("codex")
@@ -381,7 +440,7 @@ class _AppServerClient:
                 if not raw:
                     break
                 line = _decode_bytes(raw).rstrip()
-                if line:
+                if line and not _is_benign_codex_warning(line):
                     self._stderr_tail.append(line)
 
         threading.Thread(target=_read_stdout, daemon=True).start()
@@ -1317,7 +1376,7 @@ def _run_codex_exec(
         t_out.join(timeout=2.0)
         t_err.join(timeout=1.0)
 
-        stderr_text = _decode_bytes(b"".join(stderr_chunks)).strip()
+        stderr_text = _filter_stderr_noise(_decode_bytes(b"".join(stderr_chunks)))
 
         last_message = ""
         if os.path.exists(out_file):
@@ -1685,7 +1744,7 @@ def tool_exec(args: dict[str, Any], cancel_event: threading.Event | None = None)
             raise ValueError("'model' must be a non-empty string.")
         model: str | None = model_arg.strip()
     else:
-        model = None if profile else "gpt-6.2-sol"
+        model = None if profile else _default_model()
 
     reasoning_effort = args.get("reasoning_effort")
     if reasoning_effort is not None and reasoning_effort not in VALID_REASONING_EFFORTS:
@@ -1845,7 +1904,7 @@ def tool_review(args: dict[str, Any], cancel_event: threading.Event | None = Non
             raise ValueError("'model' must be a non-empty string.")
         model: str | None = model_arg.strip()
     else:
-        model = None if profile else "gpt-6.2-sol"
+        model = None if profile else _default_model()
 
     reasoning_arg = args.get("reasoning_effort")
     if reasoning_arg is not None:
@@ -2029,7 +2088,10 @@ TOOLS: list[dict[str, Any]] = [
                 },
                 "model": {
                     "type": "string",
-                    "description": "Codex model id, e.g. 'gpt-6.2-sol' or 'gpt-6.2-astra'.",
+                    "description": (
+                        "Optional Codex model id (e.g. 'gpt-6.2-sol' or 'gpt-6.2-astra'). "
+                        "Omit to use CODEX_DEFAULT_MODEL or Codex CLI's configured default."
+                    ),
                 },
                 "profile": {
                     "type": "string",
@@ -2111,7 +2173,10 @@ TOOLS: list[dict[str, Any]] = [
                 },
                 "model": {
                     "type": "string",
-                    "description": "Codex model id (default: 'gpt-6.2-sol' unless 'profile' is set).",
+                    "description": (
+                        "Optional Codex model id (omit to use profile, CODEX_DEFAULT_MODEL, "
+                        "or Codex CLI's configured default)."
+                    ),
                 },
                 "profile": {
                     "type": "string",
@@ -2176,8 +2241,9 @@ TOOLS: list[dict[str, Any]] = [
                 "wait_seconds": {
                     "type": "number",
                     "description": (
-                        "Seconds (0-120) to wait for completion before returning early if done "
-                        "(use 30-45 for low/medium, 90-120 for high/xhigh/astra)."
+                        "Seconds (0-120) to wait for completion before returning early if done. "
+                        "Keep below your MCP host's call timeout (90-120s for 180s+ hosts on heavy "
+                        "runs; 20-45s on 30-60s hosts or light runs)."
                     ),
                 },
                 "include_results": {
@@ -2246,11 +2312,17 @@ def _handle_request(msg: dict[str, Any], cancel_event: threading.Event) -> None:
 
     try:
         if method == "initialize":
+            req_ver = params.get("protocolVersion")
+            negotiated_ver = (
+                req_ver
+                if isinstance(req_ver, str) and req_ver in SUPPORTED_PROTOCOL_VERSIONS
+                else PROTOCOL_VERSION
+            )
             _send({
                 "jsonrpc": "2.0",
                 "id": msg_id,
                 "result": {
-                    "protocolVersion": PROTOCOL_VERSION,
+                    "protocolVersion": negotiated_ver,
                     "capabilities": {"tools": {}},
                     "serverInfo": SERVER_INFO,
                 },
@@ -2263,6 +2335,14 @@ def _handle_request(msg: dict[str, Any], cancel_event: threading.Event) -> None:
 
         if method == "tools/list":
             _send({"jsonrpc": "2.0", "id": msg_id, "result": {"tools": TOOLS}})
+            return
+
+        if method == "resources/list":
+            _send({"jsonrpc": "2.0", "id": msg_id, "result": {"resources": []}})
+            return
+
+        if method == "prompts/list":
+            _send({"jsonrpc": "2.0", "id": msg_id, "result": {"prompts": []}})
             return
 
         if method == "tools/call":
@@ -2344,7 +2424,7 @@ def main() -> None:
             with CANCEL_LOCK:
                 CANCEL_EVENTS[msg_id] = cancel_event
 
-            if method in ("initialize", "ping", "tools/list"):
+            if method in ("initialize", "ping", "tools/list", "resources/list", "prompts/list"):
                 _handle_request(msg, cancel_event)
             else:
                 executor.submit(_handle_request, msg, cancel_event)
