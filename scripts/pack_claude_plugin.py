@@ -13,6 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 PLUGIN_FILES: tuple[str, ...] = (
     ".claude-plugin/plugin.json",
+    ".claude-plugin/icon.png",
     ".mcp.json",
     "assets/logo.png",
     "assets/logo-96.png",

@@ -10,7 +10,7 @@
   "homepage": "https://github.com/longpi233/codex-bridge",
   "repository": "https://github.com/longpi233/codex-bridge",
   "license": "MIT",
-  "icon": "./assets/logo.png",
+  "icon": "./.claude-plugin/icon.png",
   "agents": [
     "./claude/agents/codex-worker.md"
   ],

@@ -1,7 +1,7 @@
 # Codex GPT Bridge (`codex-bridge`)
 
 <p align="center">
-  <img src="./assets/logo.png" alt="codex-bridge logo" width="220" />
+  <img src="./assets/logo-full.png" alt="codex-bridge logo" width="220" />
 </p>
 
 <p align="center">
