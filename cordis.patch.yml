@@ -1,5 +1,6 @@
 # Native DeepSeek Harness (DSH) bundle patch for codex-bridge.
-# Exposes 6 tools as mcp__codex-bridge__<tool> via @deepseek-ai/dsh-mcp-client.
+# Mounts 6 tools as mcp__codex-bridge__<tool> via @deepseek-ai/dsh-mcp-client
+# and bundles the codex-delegate skill via @deepseek-ai/dsh-skill-filesystem.
 # Optional override: set CODEX_BRIDGE_PYTHON in DSH environment to pin a specific Python interpreter.
 - insert:
     - id: codex-bridge-mcp
@@ -90,3 +91,38 @@
           })()
         toolCallTimeoutMs: 1800000
         failOnStartupError: true
+    - id: codex-bridge-skills
+      name: '@deepseek-ai/dsh-skill-filesystem'
+      disabled: !!js >
+        typeof ctx !== "undefined"
+        && typeof ctx?.loader?.entries === "function"
+        && [...ctx.loader.entries()].some((e) =>
+          e?.options?.name === "@deepseek-ai/dsh-skill-filesystem"
+          && e?.options?.id !== "codex-bridge-skills"
+          && e?.options?.config?.providerName === "codex-bridge"
+          && !e?.disabled
+        )
+      config:
+        providerName: codex-bridge
+        includeDefaultRoots: false
+        bundledSkillDir: !!js >
+          (() => {
+            const fs = process.getBuiltinModule("node:fs");
+            const path = process.getBuiltinModule("node:path");
+            const { createRequire } = process.getBuiltinModule("node:module");
+            const bases = [
+              typeof ctx !== "undefined" ? ctx?.profileContext?.dir : null,
+              process.cwd(),
+            ].filter(Boolean);
+            for (const base of bases) {
+              try {
+                const req = createRequire(path.join(base, "package.json"));
+                const dir = path.dirname(req.resolve("codex-bridge/package.json"));
+                const skillsDir = path.join(dir, "skills");
+                if (fs.existsSync(skillsDir)) return skillsDir;
+              } catch {}
+            }
+            const localSkills = path.join(process.cwd(), "skills");
+            if (fs.existsSync(localSkills)) return localSkills;
+            return path.join(process.cwd(), "node_modules", "codex-bridge", "skills");
+          })()

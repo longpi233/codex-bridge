@@ -1,4 +1,5 @@
 import argparse
+import base64
 import importlib.util
 import json
 import os
@@ -661,6 +662,11 @@ time.sleep(10.0)
         assert codex_bin.lower().endswith("codex.exe")
         assert env.get("CODEX_MANAGED_BY_NPM") == "1"
 
+    # 20. Upstream app-server clientInfo stays lightweight without inline icons
+    assert "icons" not in mod.CLIENT_INFO
+    assert mod.CLIENT_INFO["name"] == "codex-bridge"
+    assert mod.CLIENT_INFO["version"] == mod.SERVER_INFO["version"]
+
     print("UNIT FIXES: ALL PASSED")
 
 
@@ -865,7 +871,18 @@ print(json.dumps({"type": "thread.started", "thread_id": "fake-exec-1"}))
 
         send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}})
         init_res = wait_id(1)["result"]
-        assert init_res["serverInfo"]["name"] == "codex-bridge"
+        server_info = init_res["serverInfo"]
+        assert server_info["name"] == "codex-bridge"
+        assert server_info["title"] == "Codex GPT Bridge"
+        icons = server_info.get("icons")
+        assert isinstance(icons, list) and len(icons) >= 1, server_info
+        icon0 = icons[0]
+        assert icon0["mimeType"] == "image/png", icon0
+        assert icon0["sizes"] == ["96x96"], icon0
+        assert icon0["src"].startswith("data:image/png;base64,"), icon0
+        raw_icon = base64.b64decode(icon0["src"].split(",", 1)[1])
+        assert 0 < len(raw_icon) < 10_000, len(raw_icon)
+        assert len(json.dumps(server_info, separators=(",", ":"))) < 16_000
         assert init_res["protocolVersion"] == "2025-06-18", init_res
 
         send({"jsonrpc": "2.0", "id": 103, "method": "initialize", "params": {"protocolVersion": "2099-01-01"}})

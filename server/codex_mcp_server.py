@@ -13,6 +13,7 @@ Cross-platform & cross-agent (Antigravity, Claude Code, Cursor, Windsurf, etc.):
 
 from __future__ import annotations
 
+import base64
 import collections
 import concurrent.futures
 import ctypes
@@ -31,13 +32,49 @@ import threading
 import time
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 
-SERVER_INFO = {
+CLIENT_INFO = {
     "name": "codex-bridge",
     "version": "0.2.2",
 }
+_MAX_SERVER_ICON_BYTES = 10_000
+_MAX_SERVER_INFO_JSON_CHARS = 15_500
+
+
+def _load_server_icons() -> list[dict[str, Any]]:
+    icon_path = Path(__file__).resolve().parent.parent / "assets" / "logo-96.png"
+    try:
+        raw = icon_path.read_bytes()
+    except OSError:
+        return []
+    if not (0 < len(raw) <= _MAX_SERVER_ICON_BYTES):
+        return []
+    b64 = base64.b64encode(raw).decode("ascii")
+    return [{
+        "src": f"data:image/png;base64,{b64}",
+        "mimeType": "image/png",
+        "sizes": ["96x96"],
+    }]
+
+
+def _build_server_info() -> dict[str, Any]:
+    info: dict[str, Any] = {
+        "name": CLIENT_INFO["name"],
+        "title": "Codex GPT Bridge",
+        "version": CLIENT_INFO["version"],
+    }
+    icons = _load_server_icons()
+    if icons:
+        candidate = {**info, "icons": icons}
+        if len(json.dumps(candidate, separators=(",", ":"))) < _MAX_SERVER_INFO_JSON_CHARS:
+            return candidate
+    return info
+
+
+SERVER_INFO = _build_server_info()
 PROTOCOL_VERSION = "2024-11-05"
 SUPPORTED_PROTOCOL_VERSIONS = (
     "2024-11-05",
@@ -550,7 +587,7 @@ class _AppServerClient:
         # Codex app-server handshake: initialize -> wait result -> initialized
         init_resp = self._send_rpc_unlocked(
             "initialize",
-            {"clientInfo": SERVER_INFO, "capabilities": {}},
+            {"clientInfo": CLIENT_INFO, "capabilities": {}},
             timeout=timeout,
         )
         if "error" in init_resp:

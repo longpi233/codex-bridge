@@ -37,6 +37,7 @@
     "skills/codex-delegate/references/playbook.md",
     "locale/*.json",
     "assets/logo.png",
+    "assets/logo-96.png",
     "LICENSE",
     "README.md",
     "README_CN.md"

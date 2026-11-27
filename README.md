@@ -150,7 +150,7 @@ Includes all 6 MCP tools, the `codex-delegate` skill, and a native `codex-worker
 
 ### 3. DeepSeek Harness
 
-DSH supports `codex-bridge` as a native Cordis plugin bundle.
+DSH supports `codex-bridge` as a native Cordis plugin bundle, automatically mounting all 6 MCP tools and the bundled `codex-delegate` skill (no manual skill copying required).
 
 - **Install via DSH CLI (Recommended)**:
   ```bash
@@ -158,8 +158,7 @@ DSH supports `codex-bridge` as a native Cordis plugin bundle.
   dsh plugin --profile desktop add github:longpi233/codex-bridge
   ```
   *(Or pass a local clone path: `dsh plugin --profile desktop add /path/to/codex-bridge`.)*
-  1. Enable **`codex-bridge`** in DSH's Plugins page (or add `"codex-bridge"` to `dsh.profile.bundles` in `~/.dsh/profiles/<profile>/package.json`).
-  2. *(Optional)* Copy `skills/codex-delegate/` to `~/.dsh/skills/codex-delegate` so your agent follows the quota-aware workflow.
+  Then enable **`codex-bridge`** in DSH's Plugins page (or add `"codex-bridge"` to `dsh.profile.bundles` in `~/.dsh/profiles/<profile>/package.json`).
 
 - **Or configure manually via `cordis.patch.yml`**:
   Append the entry below to `~/.dsh/profiles/<profile>/cordis.patch.yml` and save (DSH hot-reloads without restarting):

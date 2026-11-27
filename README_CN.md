@@ -150,7 +150,7 @@
 
 ### 3. DeepSeek Harness
 
-DSH 原生支持以 Cordis 插件包形式安装 `codex-bridge`。
+DSH 原生支持以 Cordis 插件包形式安装 `codex-bridge`，安装后将**自动挂载**全部 6 个 MCP 工具与内置的 `codex-delegate` 技能（无需手动复制技能文件）。
 
 - **通过 DSH 命令行安装（推荐）**：
   ```bash
@@ -158,8 +158,7 @@ DSH 原生支持以 Cordis 插件包形式安装 `codex-bridge`。
   dsh plugin --profile desktop add github:longpi233/codex-bridge
   ```
   *（也可从本地目录安装：`dsh plugin --profile desktop add /path/to/codex-bridge`。）*
-  1. 在 DSH 的「插件」页面启用 **`codex-bridge`**（或在 `~/.dsh/profiles/<profile>/package.json` 的 `dsh.profile.bundles` 中加入 `"codex-bridge"`）。
-  2. *（可选）* 将 `skills/codex-delegate/` 复制到 `~/.dsh/skills/codex-delegate` 以启用配额感知委派技能。
+  随后在 DSH 的「插件」页面启用 **`codex-bridge`**（或在 `~/.dsh/profiles/<profile>/package.json` 的 `dsh.profile.bundles` 中加入 `"codex-bridge"`）即可。
 
 - **或手动写入 `cordis.patch.yml`**：
   将以下片段追加到 `~/.dsh/profiles/<profile>/cordis.patch.yml` 并保存（DSH 会自动热重载，无需重启）：
