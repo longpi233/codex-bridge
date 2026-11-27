@@ -18,7 +18,7 @@ A cross-platform, zero-dependency **MCP stdio server** and **native plugin (Anti
 | :--- | :--- | :--- |
 | `codex_quota_status` | Live quota & routing | Queries `codex app-server` for 5h/7d rate-limit windows, exact reset times, surplus pacing ratio, and a 10-tier routing recommendation (falls back to session logs if offline). |
 | `codex_list_models` | Model discovery | Lists available Codex GPT models (e.g., `gpt-6.2-sol`, `gpt-6.2-astra`) and supported reasoning efforts (`low` → `ultra`), automatically follows upstream pagination, and supports `include_hidden`. |
-| `codex_exec` | Prompt execution | Runs non-interactive tasks with upfront `cwd` check, configurable `sandbox`, `-p` `profile`, `-i` `images` (multimodal), `ephemeral: false` + `session_id` resume, and `background: true` (with idempotent `request_id`). |
+| `codex_exec` | Prompt execution | Runs non-interactive tasks with upfront `cwd` check, configurable `sandbox`, `-p` `profile`, `-i` `images` (multimodal), `ephemeral: false` + `session_id` resume, and `background: true` (with idempotent `request_id`; sets `usageUnavailable: true` when upstream omits usage, e.g., interrupted runs). |
 | `codex_review` | Git diff review | Read-only review of `--uncommitted`, `--base <branch>`, `--commit <sha>`, or custom `focus` instructions, with optional `profile`, idempotent `request_id`, and workspace-change detection (note: upstream `codex review` does not report token usage, returning `usageUnavailable: true`). |
 | `codex_job_status` | Job & session tracking | Polls background jobs (`wait_seconds` up to `120s`, `idleSeconds`, `toolCallsCount`), waits on all active jobs when `job_id` is omitted, and lists `activeSessions`. |
 | `codex_job_cancel` | Safe cancellation | Cancels queued or running jobs and kills the full child process tree (Windows Job Object on Windows; `start_new_session` + `os.killpg` on macOS/Linux). |
@@ -282,7 +282,7 @@ Use this option if Claude Desktop's GUI process does not inherit `python` in `PA
 
 DSH does **not** use a JSON `mcp.json`. MCP servers are registered in a Cordis patch layer, and skills live in `~/.dsh/skills/`.
 
-1. **Append a server entry to `~/.dsh/profiles/<profile>/cordis.patch.yml`** (a top-level YAML list; check first with `grep serverName cordis.patch.yml` so you do not insert a duplicate `codex-bridge` server if a bundle or previous entry exists):
+1. **Append a server entry to `~/.dsh/profiles/<profile>/cordis.patch.yml`** (a top-level YAML list; check first with `grep serverName cordis.patch.yml` — or PowerShell: `Select-String -Path cordis.patch.yml -Pattern serverName` — so you do not insert a duplicate `codex-bridge` server if a bundle or previous entry exists):
    ```yaml
    - insert:
        - id: codex-bridge-mcp

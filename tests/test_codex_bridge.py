@@ -425,6 +425,7 @@ print(json.dumps({"type": "thread.started", "thread_id": "sess-bg-1"}))
         try:
             sync_res = mod.tool_exec({"prompt": "sync check", "cwd": bg_dir})
             assert sync_res["resumable"] is False
+            assert sync_res.get("usageUnavailable") is True and "usage" not in sync_res, sync_res
 
             bg_res = mod.tool_exec({"prompt": "bg check", "cwd": bg_dir, "background": True})
             assert bg_res["resumable"] is True

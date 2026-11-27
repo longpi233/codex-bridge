@@ -18,7 +18,7 @@
 | :--- | :--- | :--- |
 | `codex_quota_status` | 实时配额与路由 | 查询 `codex app-server` 获取 5 小时/7 天双窗口限额、精确重置时间、配额盈余比，并生成 10 档模型与推理强度建议（离线时自动降级读取本地会话日志）。 |
 | `codex_list_models` | 模型发现 | 列出当前本地 Codex CLI 可用的 GPT 模型（如 `gpt-6.2-sol`、`gpt-6.2-astra`）及支持的推理强度（`low` → `ultra`），自动翻页拉取全部上游模型，支持 `include_hidden`。 |
-| `codex_exec` | 非交互执行 | 预先校验 `cwd`，支持自定义 `sandbox`、`-p` `profile`、`-i` `images`（多模态传图）、`ephemeral: false` + `session_id` 多轮续接，以及 `background: true` 后台运行（支持 `request_id` 幂等去重）。 |
+| `codex_exec` | 非交互执行 | 预先校验 `cwd`，支持自定义 `sandbox`、`-p` `profile`、`-i` `images`（多模态传图）、`ephemeral: false` + `session_id` 多轮续接，以及 `background: true` 后台运行（支持 `request_id` 幂等去重；若上游未返回用量如中断运行会返回 `usageUnavailable: true`）。 |
 | `codex_review` | Git 差异审查 | 以严格 `read-only` 模式审查 `--uncommitted`、`--base <branch>`、`--commit <sha>` 或自定义 `focus` 审查重点，支持 `profile`、`request_id` 幂等去重及审查期间工作区变更检测（注：上游 `codex review` 不回传 token 用量，会返回 `usageUnavailable: true`）。 |
 | `codex_job_status` | 任务与会话查询 | 轮询后台任务（`wait_seconds` 最高 `120s`，含 `idleSeconds` 与 `toolCallsCount`）；不传 `job_id` 时可单次等待全部活跃任务并列出 `activeSessions`。 |
 | `codex_job_cancel` | 安全取消任务 | 取消排队中或运行中的任务并终止整棵子进程树（Windows 使用 Job Object，macOS/Linux 使用 `start_new_session` + `os.killpg`）。 |
@@ -282,7 +282,7 @@ Claude Desktop 支持直接通过 GitHub 仓库添加插件市场（**Add market
 
 DSH **不使用** JSON 格式的 `mcp.json`，其 MCP 服务通过 Cordis 补丁层注册，Skill 目录位于 `~/.dsh/skills/`。
 
-1. **追加条目到 `~/.dsh/profiles/<profile>/cordis.patch.yml`**（顶层为 YAML 列表；先检查文件中是否已有同名 `serverName: codex-bridge` 以免与旧条目或包安装冲突）：
+1. **追加条目到 `~/.dsh/profiles/<profile>/cordis.patch.yml`**（顶层为 YAML 列表；先检查文件中是否已有同名 `serverName: codex-bridge` — bash 用 `grep serverName cordis.patch.yml`，PowerShell 用 `Select-String -Path cordis.patch.yml -Pattern serverName` — 以免与旧条目或包安装冲突）：
    ```yaml
    - insert:
        - id: codex-bridge-mcp

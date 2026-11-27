@@ -36,7 +36,7 @@ from typing import Any
 
 SERVER_INFO = {
     "name": "codex-bridge",
-    "version": "0.2.0",
+    "version": "0.2.1",
 }
 PROTOCOL_VERSION = "2024-11-05"
 SUPPORTED_PROTOCOL_VERSIONS = (
@@ -1463,7 +1463,7 @@ def _run_codex_exec(
             result["activityLog"] = list(activity_log)
         if _has_nonzero_usage(usage):
             result["usage"] = usage
-        elif isinstance(usage, dict):
+        else:
             result["usageUnavailable"] = True
         if rate_limits:
             result["rateLimits"] = {
