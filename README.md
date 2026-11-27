@@ -116,7 +116,7 @@ Includes all 6 MCP tools, the `codex-delegate` skill, and a native `codex-worker
 #### Option A: Sync via GitHub Marketplace (Recommended — Easy Updates)
 
 - **Claude Desktop**:
-  1. Open **Customize** → **Plugins** → **+ Add** → **Add marketplace**.
+  1. Open **Customize** → **Plugins** → **Discover** → click **`+`** *(hovering over `+` shows **Add marketplace**)*.
   2. Enter `longpi233/codex-bridge` and click **Sync**.
   3. Install **`codex-bridge`** from the synced marketplace.
 - **Claude Code**:

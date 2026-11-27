@@ -116,7 +116,7 @@
 #### 方式 A：通过 GitHub 市场在线同步（推荐，便于后续同步更新）
 
 - **Claude Desktop**：
-  1. 打开 **Customize（自定义）** → **Plugins（插件）** → **+ Add** → **Add marketplace**。
+  1. 打开 **Customize（自定义）** → **Plugins（插件）** → **Discover** → 点击 **`+`** *（鼠标悬停在 `+` 上会显示 **Add marketplace**）*。
   2. 输入 `longpi233/codex-bridge`，点击 **Sync**。
   3. 同步完成后安装 **`codex-bridge`** 即可。
 - **Claude Code**：
