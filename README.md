@@ -2,7 +2,7 @@
 
 English | [简体中文](./README_CN.md)
 
-`Python 3.10+` · `Zero Dependencies` · `MCP stdio` · `Windows / macOS / Linux`
+`Python 3.10+` · `Zero Dependencies` · `MCP stdio` · `Windows / macOS / Linux` · `MIT License`
 
 > **Tired of GPT's defensive lecturing, robotic hedging, and refusal-flavored walls of text? Had enough of arguing with GPT just to get a straight answer?**
 >
@@ -202,6 +202,7 @@ codex-bridge/
 ├── AGENTS.md                          # Repo guide for AI agents modifying this codebase
 ├── README.md                          # Documentation (English)
 ├── README_CN.md                       # Documentation (简体中文)
+├── LICENSE                            # MIT License
 ├── .gitignore
 ├── server/
 │   └── codex_mcp_server.py            # Cross-platform MCP stdio server (zero dependencies)
@@ -217,3 +218,7 @@ codex-bridge/
 └── tests/
     └── test_codex_bridge.py           # Offline + optional --live test suite
 ```
+
+## License
+
+Licensed under the [MIT License](./LICENSE).

@@ -2,7 +2,7 @@
 
 [English](./README.md) | 简体中文
 
-`Python 3.10+` · `零外部依赖` · `MCP stdio` · `Windows / macOS / Linux`
+`Python 3.10+` · `零外部依赖` · `MCP stdio` · `Windows / macOS / Linux` · `MIT License`
 
 > **受够了 GPT 动不动就防御性拉满、打官腔、摆架子？已经忍无可忍亲自下场和 GPT 扯皮了吗？**
 >
@@ -202,6 +202,7 @@ codex-bridge/
 ├── AGENTS.md                          # 供修改本仓库代码的 AI Agent 阅读的指南
 ├── README.md                          # 项目说明与配置文档（English）
 ├── README_CN.md                       # 项目说明与配置文档（简体中文）
+├── LICENSE                            # MIT 开源协议
 ├── .gitignore
 ├── server/
 │   └── codex_mcp_server.py            # 跨平台、零依赖的 MCP stdio 服务端
@@ -217,3 +218,7 @@ codex-bridge/
 └── tests/
     └── test_codex_bridge.py           # 离线单元测试与可选 --live 测试套件
 ```
+
+## 开源协议
+
+本项目基于 [MIT License](./LICENSE) 开源。
