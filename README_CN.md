@@ -8,7 +8,7 @@
 >
 > 换个思路，让 **MCP** 来替你受气：把那个可爱又善解人意的 **Gemini**（或者任何你顺手的 Claude / 主力 Agent）推到台前，由它去和后台的 GPT 沟通对线！你照样白嫖 GPT 强悍的深度推理与代码审计能力，而所有咬文嚼字、参数对齐、长篇大论的“非人类输出”，全交给贴心的主力 Agent 消化转译——**从此再也不用担心 GPT 不说人话了。**
 
-这是一个跨平台、零第三方依赖的 **MCP stdio 服务端**与 **Antigravity 插件**，可在 **Windows、macOS 和 Linux** 上将各类 AI 编程助手（**Antigravity、Claude Code、Cursor、Windsurf 及任意支持 MCP stdio 的客户端**）桥接到你本地的 OpenAI Codex CLI（`codex`）。
+这是一个跨平台、零第三方依赖的 **MCP stdio 服务端**与**原生双端插件（Antigravity & Claude Code）**，可在 **Windows、macOS 和 Linux** 上将各类 AI 编程助手（**Antigravity、Claude Code、Claude Desktop、Cursor、Windsurf、WorkBuddy 及任意支持 MCP stdio 的客户端**）桥接到你本地的 OpenAI Codex CLI（`codex`）。
 
 ---
 
@@ -39,7 +39,8 @@
 | `server/codex_mcp_server.py` | **全平台 / 全 Agent 通用（Win/macOS/Linux）** | 标准 JSON-RPC 2.0 MCP stdio 服务端，提供全部 6 个工具。 |
 | `skills/codex-delegate/`（`SKILL.md` + `references/playbook.md`） | **跨 Agent 通用**（含 Antigravity 备注） | 标准 `SKILL.md` 工作流，兼容 Antigravity、Claude Code、Cursor、Pi 等；Antigravity 专属细节已在文中单独标注。 |
 | `rules/AGENTS.md` | **跨 Agent 通用**（含 Antigravity 备注） | 精简常驻规则，兼容支持 `AGENTS.md` 的各类 Agent。 |
-| `plugin.json` 与 `mcp_config.json` | **Antigravity 独占** | 使用 Antigravity 插件清单与 `${PLUGIN_ROOT}` 变量（自动挂载为 `codex-bridge_codex-bridge`）。其他客户端请直接配置 `server/codex_mcp_server.py` 的绝对路径。 |
+| `plugin.json` 与 `mcp_config.json` | **Antigravity 独占** | 使用 Antigravity 插件清单与 `${PLUGIN_ROOT}` 变量（自动挂载为 `codex-bridge_codex-bridge`）。 |
+| `.claude-plugin/`（`plugin.json`、`marketplace.json`）与 `.mcp.json` | **Claude Code 独占** | 标准 Claude Code 插件与市场清单，使用 `${CLAUDE_PLUGIN_ROOT}` 自动加载 MCP 服务与 `codex-delegate` 技能。 |
 | `agents/codex_worker.md` | **Antigravity 独占** | 使用 Antigravity 子代理 frontmatter 规范（`subagent: true`、`call_mcp_tool`、`view_file` 等）。 |
 | `RefreshMcpServers` 热重载接口（见 `AGENTS.md`） | **Antigravity 独占** | 仅用于在运行中的 Antigravity IDE 内单独热重载本 MCP 服务。 |
 
@@ -104,38 +105,95 @@ Antigravity 会把 **MCP 服务、Skill（`codex-delegate`）、Rule（`rules/AG
 
 ---
 
-### 2. Claude Code（配置 MCP + 安装 Skill 与 Rule）
+### 2. Claude Code（原生插件安装推荐 / 手动 CLI 注册）
 
-> **注意**：不要直接复用 `mcp_config.json`（里面的 `${PLUGIN_ROOT}` 仅 Antigravity 识别），请直接指向 `server/codex_mcp_server.py` 的绝对路径。
+本项目已内置符合官方规范的 `.claude-plugin/plugin.json`、`.claude-plugin/marketplace.json` 与 `.mcp.json`（已通过 `claude plugin validate` 校验）。
 
-1. **克隆仓库**：
+- **方式 A — 作为 Claude Code 原生插件安装（推荐，自动配好 MCP + Skill）**：
+  - **一步安装（Claude Code 2.1.275 及以上）**：
+    ```text
+    /plugin install codex-bridge --marketplace longpi233/codex-bridge
+    ```
+  - **或分步安装（兼容支持 `/plugin` 的 Claude Code 版本）**：
+    ```text
+    /plugin marketplace add longpi233/codex-bridge
+    /plugin install codex-bridge@codex-bridge
+    /reload-plugins
+    ```
+  - **本地开发 / 从已克隆目录临时加载**：
+    ```bash
+    claude --plugin-dir /path/to/codex-bridge
+    ```
+  *（安装后会自动激活 `codex-bridge` MCP 服务与 `codex-delegate` 技能；注：`agents/codex_worker.md` 为 Antigravity 专属格式，在 Claude Code 中直接由主 Agent 搭配 `codex-delegate` 技能调用即可。）*
+
+- **方式 B — 手动 CLI 注册（`claude mcp add` + Skill）**：
+  1. **克隆仓库**：
+     ```bash
+     git clone https://github.com/longpi233/codex-bridge.git /path/to/codex-bridge
+     ```
+  2. **注册 MCP 服务**：
+     ```bash
+     claude mcp add codex-bridge -- python -u /path/to/codex-bridge/server/codex_mcp_server.py
+     ```
+     *（Windows 下建议使用正斜杠路径，如 `C:/path/to/codex-bridge/server/codex_mcp_server.py`；如需全局生效，可在 `--` 前加上 `-s user`。）*
+  3. **安装 `codex-delegate` Skill 与 Rule（可选）**：
+     - **全局安装**：将 `skills/codex-delegate` 链接或复制到 `~/.claude/skills/codex-delegate`（macOS/Linux：`ln -s /path/to/codex-bridge/skills/codex-delegate ~/.claude/skills/codex-delegate`；Windows `cmd`：`mklink /J "%USERPROFILE%\.claude\skills\codex-delegate" "C:\path\to\codex-bridge\skills\codex-delegate"`）。
+     - **单项目安装**：复制到 `<你的项目>/.claude/skills/codex-delegate`。
+     - **Rule**：将 [`rules/AGENTS.md`](./rules/AGENTS.md) 追加到 `~/.claude/CLAUDE.md`（或项目的 `CLAUDE.md`）。
+
+---
+
+### 3. Claude Desktop（macOS / Windows 桌面客户端）
+
+> **重要区分**：**Claude Desktop（桌面端应用）** 与 **Claude Code（CLI 终端工具）** 的配置体系完全独立。Claude Desktop **不支持** `claude mcp add` 或 `.claude-plugin/` 插件目录，必须编辑 `claude_desktop_config.json` 并填写绝对路径（不能使用 `${PLUGIN_ROOT}` 或 `${CLAUDE_PLUGIN_ROOT}`）。
+
+1. **克隆仓库到本地**：
    ```bash
    git clone https://github.com/longpi233/codex-bridge.git /path/to/codex-bridge
    ```
 
-2. **注册 MCP 服务**：
-   ```bash
-   claude mcp add codex-bridge -- python -u /path/to/codex-bridge/server/codex_mcp_server.py
-   ```
-   *（Windows 下建议使用正斜杠路径，如 `C:/path/to/codex-bridge/server/codex_mcp_server.py`；如需全局生效，可在 `--` 前加上 `-s user`。）*
+2. **打开 Claude Desktop 的配置文件**：
+   - 在 Claude Desktop 菜单中打开 **Settings…（设置）** → **Developer（开发者）** → **Edit Config（编辑配置）**，或直接编辑以下路径：
+     - **Windows**：`%APPDATA%\Claude\claude_desktop_config.json`
+     - **macOS**：`~/Library/Application Support/Claude/claude_desktop_config.json`
 
-3. **安装 `codex-delegate` Skill**（可选但强烈建议：教会 Claude 先查配额、合理选模型，并在长任务时开启 `background: true`）：
-   - **全局安装（所有项目可用）**：将 `skills/codex-delegate` 复制或链接到 `~/.claude/skills/codex-delegate`
-     ```bash
-     # macOS / Linux
-     ln -s /path/to/codex-bridge/skills/codex-delegate ~/.claude/skills/codex-delegate
-
-     # Windows（cmd 目录联接）
-     mklink /J "%USERPROFILE%\.claude\skills\codex-delegate" "C:\path\to\codex-bridge\skills\codex-delegate"
+3. **在 `mcpServers` 中添加 `codex-bridge`**（桌面 GUI 应用通常不会继承终端 `PATH`，强烈建议**同时填写 `python` 与 `codex_mcp_server.py` 的绝对路径**，可通过 `where python` 或 `which python3` 查询）：
+   - **Windows 示例**：
+     ```json
+     {
+       "mcpServers": {
+         "codex-bridge": {
+           "command": "C:/path/to/python.exe",
+           "args": [
+             "-u",
+             "C:/path/to/codex-bridge/server/codex_mcp_server.py"
+           ]
+         }
+       }
+     }
      ```
-   - **单项目安装**：复制到 `<你的项目>/.claude/skills/codex-delegate`。
+   - **macOS 示例**：
+     ```json
+     {
+       "mcpServers": {
+         "codex-bridge": {
+           "command": "/usr/local/bin/python3",
+           "args": [
+             "-u",
+             "/path/to/codex-bridge/server/codex_mcp_server.py"
+           ]
+         }
+       }
+     }
+     ```
 
-4. **添加 Rule（可选）**：
-   将 [`rules/AGENTS.md`](./rules/AGENTS.md) 中的简短规范追加到 `~/.claude/CLAUDE.md`（或项目的 `CLAUDE.md`）。
+4. **彻底退出并重启 Claude Desktop**：
+   - 仅关闭窗口不会生效，必须在系统托盘 / 菜单栏 **完全退出（Quit）** 后重新打开。
+   - 若工具未出现，可在 **Settings → Developer → Open Logs Folder** 查看启动日志定位路径或 Python 环境问题。
 
 ---
 
-### 3. Cursor、Windsurf、WorkBuddy 及其他 MCP 客户端（配置 MCP + 安装 Skill 与 Rule）
+### 4. Cursor、Windsurf、WorkBuddy 及其他 MCP 客户端（配置 MCP + 安装 Skill 与 Rule）
 
 > 同样**不要**直接复制包含 `${PLUGIN_ROOT}` 的 `mcp_config.json`，请填写 `server/codex_mcp_server.py` 的绝对路径（GUI 客户端如果与终端 `PATH` 不一致，建议直接填写 `python` 可执行文件的绝对路径）。
 
@@ -205,6 +263,10 @@ python tests/test_codex_bridge.py --live
 
 ```text
 codex-bridge/
+├── .claude-plugin/
+│   ├── plugin.json                    # Claude Code 插件清单
+│   └── marketplace.json               # Claude Code 市场清单
+├── .mcp.json                          # Claude Code MCP 配置（使用 ${CLAUDE_PLUGIN_ROOT}）
 ├── plugin.json                        # Antigravity 插件清单
 ├── mcp_config.json                    # Antigravity MCP 配置（使用 ${PLUGIN_ROOT}）
 ├── AGENTS.md                          # 供修改本仓库代码的 AI Agent 阅读的指南

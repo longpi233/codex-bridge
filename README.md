@@ -8,7 +8,7 @@ English | [简体中文](./README_CN.md)
 >
 > Put an MCP bridge in between: let your sweet, empathetic **Gemini** (or whatever favorite AI agent you already love working with) do the talking with GPT under the hood. You keep all of GPT's heavy-duty reasoning and code-review horsepower — while your main agent handles the back-and-forth, filters the attitude, and translates every finding back to you in plain, pleasant human language. **Never stress over GPT not speaking human again.**
 
-A cross-platform, zero-dependency **MCP stdio server** and **Antigravity plugin** that connects AI coding agents (**Antigravity, Claude Code, Cursor, Windsurf, and any MCP stdio client**) to your local OpenAI Codex CLI (`codex`) on **Windows, macOS, and Linux**.
+A cross-platform, zero-dependency **MCP stdio server** and **native plugin (Antigravity & Claude Code)** that connects AI coding agents (**Antigravity, Claude Code, Claude Desktop, Cursor, Windsurf, WorkBuddy, and any MCP stdio client**) to your local OpenAI Codex CLI (`codex`) on **Windows, macOS, and Linux**.
 
 ---
 
@@ -39,7 +39,8 @@ A cross-platform, zero-dependency **MCP stdio server** and **Antigravity plugin*
 | `server/codex_mcp_server.py` | **Universal (All MCP clients, Win/macOS/Linux)** | Standard JSON-RPC 2.0 MCP stdio server exposing all 6 tools. |
 | `skills/codex-delegate/` (`SKILL.md` + `references/playbook.md`) | **Cross-Agent** (with Antigravity notes) | Standard `SKILL.md` workflow compatible with Antigravity, Claude Code, Cursor, Pi, etc. Antigravity-specific notes are clearly marked. |
 | `rules/AGENTS.md` | **Cross-Agent** (with Antigravity note) | Concise always-on delegation rule compatible with any agent supporting `AGENTS.md`. |
-| `plugin.json` & `mcp_config.json` | **Antigravity-Exclusive** | Uses Antigravity's plugin manifest and `${PLUGIN_ROOT}` variable (mounted as `codex-bridge_codex-bridge`). Other clients must point to the absolute path of `server/codex_mcp_server.py`. |
+| `plugin.json` & `mcp_config.json` | **Antigravity-Exclusive** | Uses Antigravity's plugin manifest and `${PLUGIN_ROOT}` variable (mounted as `codex-bridge_codex-bridge`). |
+| `.claude-plugin/` (`plugin.json`, `marketplace.json`) & `.mcp.json` | **Claude Code-Exclusive** | Native Claude Code plugin & marketplace manifests using `${CLAUDE_PLUGIN_ROOT}` to auto-load the MCP server + `codex-delegate` skill. |
 | `agents/codex_worker.md` | **Antigravity-Exclusive** | Uses Antigravity subagent frontmatter (`subagent: true`, `call_mcp_tool`, `view_file`, etc.). |
 | `RefreshMcpServers` reload endpoint (in `AGENTS.md`) | **Antigravity-Exclusive** | Hot-reloads only this MCP server inside a running Antigravity IDE instance. |
 
@@ -104,38 +105,95 @@ Antigravity loads the **MCP server, Skill (`codex-delegate`), Rule (`rules/AGENT
 
 ---
 
-### 2. Claude Code (MCP Server + Skill & Rule)
+### 2. Claude Code (Native Plugin — Recommended, or Manual CLI)
 
-> Do **not** copy `mcp_config.json` directly — `${PLUGIN_ROOT}` is Antigravity-only. Point Claude Code directly to `server/codex_mcp_server.py`.
+`codex-bridge` ships with standard Claude Code plugin manifests (`.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, `.mcp.json`) validated by `claude plugin validate`.
+
+- **Option A — Install as a Claude Code Plugin (Recommended)**:
+  - **One-step install (Claude Code 2.1.275+)**:
+    ```text
+    /plugin install codex-bridge --marketplace longpi233/codex-bridge
+    ```
+  - **Or two-step install (all Claude Code versions with `/plugin`)**:
+    ```text
+    /plugin marketplace add longpi233/codex-bridge
+    /plugin install codex-bridge@codex-bridge
+    /reload-plugins
+    ```
+  - **Local development / cloned repo**:
+    ```bash
+    claude --plugin-dir /path/to/codex-bridge
+    ```
+  *(This automatically loads the `codex-bridge` MCP server and `codex-delegate` skill. Note: `agents/codex_worker.md` uses Antigravity frontmatter, so in Claude Code simply use the main agent with `codex-delegate`.)*
+
+- **Option B — Manual CLI Registration (`claude mcp add` + Skill)**:
+  1. **Clone the repository**:
+     ```bash
+     git clone https://github.com/longpi233/codex-bridge.git /path/to/codex-bridge
+     ```
+  2. **Register the MCP server**:
+     ```bash
+     claude mcp add codex-bridge -- python -u /path/to/codex-bridge/server/codex_mcp_server.py
+     ```
+     *(On Windows, use forward slashes like `C:/path/to/codex-bridge/server/codex_mcp_server.py`. Add `-s user` before `--` to register globally across all projects.)*
+  3. **Install the `codex-delegate` Skill & Rule** (optional):
+     - **Global**: link/copy `skills/codex-delegate` to `~/.claude/skills/codex-delegate` (macOS/Linux: `ln -s /path/to/codex-bridge/skills/codex-delegate ~/.claude/skills/codex-delegate`; Windows `cmd`: `mklink /J "%USERPROFILE%\.claude\skills\codex-delegate" "C:\path\to\codex-bridge\skills\codex-delegate"`).
+     - **Project-local**: copy into `<your-project>/.claude/skills/codex-delegate`.
+     - **Rule**: append [`rules/AGENTS.md`](./rules/AGENTS.md) into `~/.claude/CLAUDE.md` (or project `CLAUDE.md`).
+
+---
+
+### 3. Claude Desktop (macOS / Windows Desktop App)
+
+> **Important**: **Claude Desktop** is a separate GUI app from **Claude Code CLI**. It does **not** use `claude mcp add` or `.claude-plugin/` — you must configure `claude_desktop_config.json` directly using absolute paths (no `${PLUGIN_ROOT}` or `${CLAUDE_PLUGIN_ROOT}`).
 
 1. **Clone the repository**:
    ```bash
    git clone https://github.com/longpi233/codex-bridge.git /path/to/codex-bridge
    ```
 
-2. **Register the MCP server**:
-   ```bash
-   claude mcp add codex-bridge -- python -u /path/to/codex-bridge/server/codex_mcp_server.py
-   ```
-   *(On Windows, use forward slashes like `C:/path/to/codex-bridge/server/codex_mcp_server.py`. Add `-s user` before `--` to register globally across all projects.)*
+2. **Open Claude Desktop's MCP config file**:
+   - In Claude Desktop: open **Settings…** → **Developer** → **Edit Config** (or edit the file directly):
+     - **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+     - **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
 
-3. **Install the `codex-delegate` Skill** (optional, strongly recommended so Claude knows how to check quota, pick models, and use `background: true`):
-   - **Global (all projects)**: copy or symlink `skills/codex-delegate` to `~/.claude/skills/codex-delegate`
-     ```bash
-     # macOS / Linux
-     ln -s /path/to/codex-bridge/skills/codex-delegate ~/.claude/skills/codex-delegate
-
-     # Windows (cmd junction)
-     mklink /J "%USERPROFILE%\.claude\skills\codex-delegate" "C:\path\to\codex-bridge\skills\codex-delegate"
+3. **Add `codex-bridge` under `mcpServers`** (use the full absolute path to `python` as well as `codex_mcp_server.py`, since GUI apps often do not inherit your shell `PATH`):
+   - **Windows**:
+     ```json
+     {
+       "mcpServers": {
+         "codex-bridge": {
+           "command": "C:/path/to/python.exe",
+           "args": [
+             "-u",
+             "C:/path/to/codex-bridge/server/codex_mcp_server.py"
+           ]
+         }
+       }
+     }
      ```
-   - **Project-local**: copy or symlink into `<your-project>/.claude/skills/codex-delegate`.
+   - **macOS**:
+     ```json
+     {
+       "mcpServers": {
+         "codex-bridge": {
+           "command": "/usr/local/bin/python3",
+           "args": [
+             "-u",
+             "/path/to/codex-bridge/server/codex_mcp_server.py"
+           ]
+         }
+       }
+     }
+     ```
 
-4. **Add the Rule (optional)**:
-   Append the short guidelines from [`rules/AGENTS.md`](./rules/AGENTS.md) into `~/.claude/CLAUDE.md` (or your project's `CLAUDE.md`).
+4. **Fully Quit and Restart Claude Desktop**:
+   - Saving the JSON is not enough — **quit Claude Desktop completely** (from the system tray / menu bar) and relaunch it.
+   - If the tools do not appear, check **Settings → Developer → Open Logs Folder** for startup diagnostics (e.g., verify `python` path via `where python` on Windows or `which python3` on macOS).
 
 ---
 
-### 3. Cursor, Windsurf, WorkBuddy & Other MCP Clients (MCP Server + Skill & Rule)
+### 4. Cursor, Windsurf, WorkBuddy & Other MCP Clients (MCP Server + Skill & Rule)
 
 > Again, do **not** copy `mcp_config.json` with `${PLUGIN_ROOT}`. Use an absolute path to `server/codex_mcp_server.py` (and for GUI apps whose `PATH` differs from your terminal, prefer the full path to `python`).
 
@@ -205,6 +263,10 @@ python tests/test_codex_bridge.py --live
 
 ```text
 codex-bridge/
+├── .claude-plugin/
+│   ├── plugin.json                    # Claude Code plugin manifest
+│   └── marketplace.json               # Claude Code marketplace manifest
+├── .mcp.json                          # Claude Code plugin MCP config (${CLAUDE_PLUGIN_ROOT})
 ├── plugin.json                        # Antigravity plugin manifest
 ├── mcp_config.json                    # Antigravity MCP config (${PLUGIN_ROOT})
 ├── AGENTS.md                          # Repo guide for AI agents modifying this codebase

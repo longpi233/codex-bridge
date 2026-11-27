@@ -5,6 +5,7 @@ For runtime delegation instructions used in *other* workspaces, see `rules/AGENT
 
 ## Repository Layout
 
+- `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, `.mcp.json` — **Claude Code-exclusive** plugin/marketplace manifests using `${CLAUDE_PLUGIN_ROOT}` (`codex-bridge` version `0.2.0`).
 - `plugin.json` — **Antigravity-exclusive** plugin manifest (`name: "codex-bridge"`, synced to version `0.2.0`). Do not add unsupported top-level fields.
 - `mcp_config.json` — **Antigravity-exclusive** MCP server definition using `${PLUGIN_ROOT}/server/codex_mcp_server.py`.
 - `server/codex_mcp_server.py` — Cross-platform (Windows/macOS/Linux), cross-agent, zero-dependency Python 3.10+ MCP stdio server exposing 6 tools:
