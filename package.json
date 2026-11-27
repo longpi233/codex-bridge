@@ -1,0 +1,52 @@
+{
+  "name": "codex-bridge",
+  "version": "0.2.1",
+  "description": "Zero-dependency, cross-platform MCP stdio bridge connecting DeepSeek Harness (DSH) and other AI agents to local OpenAI Codex CLI GPT models with live quota routing, code review, background jobs, and multimodal resume.",
+  "type": "module",
+  "license": "MIT",
+  "author": {
+    "name": "longpi233",
+    "url": "https://github.com/longpi233"
+  },
+  "homepage": "https://github.com/longpi233/codex-bridge#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/longpi233/codex-bridge.git"
+  },
+  "bugs": {
+    "url": "https://github.com/longpi233/codex-bridge/issues"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "cordis",
+    "mcp",
+    "codex",
+    "openai",
+    "code-review"
+  ],
+  "exports": {
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./assets/logo.png",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "cordis.patch.yml",
+    "server/codex_mcp_server.py",
+    "skills/codex-delegate/SKILL.md",
+    "skills/codex-delegate/references/playbook.md",
+    "locale/*.json",
+    "assets/logo.png",
+    "LICENSE",
+    "README.md",
+    "README_CN.md"
+  ],
+  "engines": {
+    "dsh": ">=0.2.0-rc.1"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

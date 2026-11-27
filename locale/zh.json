@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Codex GPT 桥接",
+    "description": "将 DSH 桥接到本机 OpenAI Codex CLI（gpt-6.2-sol / gpt-6.2-astra），支持配额感知调度、Git 差异审查、后台异步任务与多模态续接。"
+  }
+}

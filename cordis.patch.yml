@@ -1,0 +1,92 @@
+# Native DeepSeek Harness (DSH) bundle patch for codex-bridge.
+# Exposes 6 tools as mcp__codex-bridge__<tool> via @deepseek-ai/dsh-mcp-client.
+# Optional override: set CODEX_BRIDGE_PYTHON in DSH environment to pin a specific Python interpreter.
+- insert:
+    - id: codex-bridge-mcp
+      name: '@deepseek-ai/dsh-mcp-client'
+      disabled: !!js >
+        typeof ctx !== "undefined"
+        && typeof ctx?.loader?.entries === "function"
+        && [...ctx.loader.entries()].some((e) =>
+          e?.options?.name === "@deepseek-ai/dsh-mcp-client"
+          && e?.options?.id !== "codex-bridge-mcp"
+          && e?.options?.config?.serverName === "codex-bridge"
+          && !e?.disabled
+        )
+      config:
+        serverName: codex-bridge
+        transport: stdio
+        command: !!js >
+          (() => {
+            const envPy = (process.env.CODEX_BRIDGE_PYTHON || "").trim();
+            if (envPy) return envPy;
+            const fs = process.getBuiltinModule("node:fs");
+            const { execFileSync } = process.getBuiltinModule("node:child_process");
+            if (process.platform === "win32") {
+              try {
+                const lines = execFileSync("where.exe", ["python"], {
+                  encoding: "utf8",
+                  stdio: ["ignore", "pipe", "ignore"],
+                }).split(/\r?\n/);
+                const hit = lines
+                  .map((s) => s.trim())
+                  .find((p) => p && !/WindowsApps\\python\.exe$/i.test(p) && fs.existsSync(p));
+                if (hit) return hit;
+              } catch {}
+              return "python";
+            }
+            for (const bin of ["python3", "python"]) {
+              try {
+                const hit = execFileSync("which", [bin], {
+                  encoding: "utf8",
+                  stdio: ["ignore", "pipe", "ignore"],
+                }).trim().split(/\r?\n/)[0];
+                if (hit && fs.existsSync(hit)) return hit;
+              } catch {}
+            }
+            return "python3";
+          })()
+        args: !!js >
+          (() => {
+            const fs = process.getBuiltinModule("node:fs");
+            const path = process.getBuiltinModule("node:path");
+            const { createRequire } = process.getBuiltinModule("node:module");
+            const bases = [
+              typeof ctx !== "undefined" ? ctx?.profileContext?.dir : null,
+              process.cwd(),
+            ].filter(Boolean);
+            for (const base of bases) {
+              try {
+                const req = createRequire(path.join(base, "package.json"));
+                const dir = path.dirname(req.resolve("codex-bridge/package.json"));
+                const srv = path.join(dir, "server", "codex_mcp_server.py");
+                if (fs.existsSync(srv)) return ["-u", srv];
+              } catch {}
+            }
+            const localSrv = path.join(process.cwd(), "server", "codex_mcp_server.py");
+            if (fs.existsSync(localSrv)) return ["-u", localSrv];
+            return ["-u", path.join(process.cwd(), "node_modules", "codex-bridge", "server", "codex_mcp_server.py")];
+          })()
+        cwd: !!js >
+          (() => {
+            const fs = process.getBuiltinModule("node:fs");
+            const path = process.getBuiltinModule("node:path");
+            const { createRequire } = process.getBuiltinModule("node:module");
+            const bases = [
+              typeof ctx !== "undefined" ? ctx?.profileContext?.dir : null,
+              process.cwd(),
+            ].filter(Boolean);
+            for (const base of bases) {
+              try {
+                const req = createRequire(path.join(base, "package.json"));
+                const dir = path.dirname(req.resolve("codex-bridge/package.json"));
+                if (fs.existsSync(path.join(dir, "server", "codex_mcp_server.py"))) return dir;
+              } catch {}
+            }
+            if (fs.existsSync(path.join(process.cwd(), "server", "codex_mcp_server.py"))) {
+              return process.cwd();
+            }
+            return path.join(process.cwd(), "node_modules", "codex-bridge");
+          })()
+        toolCallTimeoutMs: 1800000
+        failOnStartupError: true

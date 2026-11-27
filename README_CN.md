@@ -1,48 +1,58 @@
 # Codex GPT Bridge (`codex-bridge`)
 
-[English](./README.md) | 简体中文
+<p align="center">
+  <img src="./assets/logo.png" alt="codex-bridge logo" width="220" />
+</p>
 
-`Python 3.10+` · `零外部依赖` · `MCP stdio` · `Windows / macOS / Linux` · `MIT License`
+<p align="center">
+  <a href="./README.md">English</a> | <strong>简体中文</strong>
+</p>
+
+<p align="center">
+  <code>Python 3.10+</code> · <code>零外部依赖</code> · <code>MCP stdio</code> · <code>Windows / macOS / Linux</code> · <code>MIT License</code>
+</p>
 
 > **受够了 GPT 动不动就防御性拉满、打官腔、摆架子？已经忍无可忍亲自下场和 GPT 扯皮了吗？**
 >
 > 换个思路，让 **MCP** 来替你受气：把那个可爱又善解人意的 **Gemini**（或者任何你顺手的 Claude / 主力 Agent）推到台前，由它去和后台的 GPT 沟通对线！你照样白嫖 GPT 强悍的深度推理与代码审计能力，而所有咬文嚼字、参数对齐、长篇大论的“非人类输出”，全交给贴心的主力 Agent 消化转译——**从此再也不用担心 GPT 不说人话了。**
 
-这是一个跨平台、零第三方依赖的 **MCP stdio 服务端**与**原生双端插件（Antigravity & Claude Code）**，可在 **Windows、macOS 和 Linux** 上将各类 AI 编程助手（**Antigravity、Claude Code、Claude Desktop、DeepSeek Harness (DSH)、Cursor、Windsurf、WorkBuddy 及任意支持 MCP stdio 的客户端**）桥接到你本地的 OpenAI Codex CLI（`codex`）。
+**`codex-bridge`** 是一个跨平台、零第三方依赖的 **MCP stdio 服务端**与**原生三端插件**（支持 **Claude Code / Claude Desktop**、**Antigravity** 与 **DeepSeek Harness / DSH**），可在 Windows、macOS 与 Linux 上把各类 AI 编程助手桥接到你本地的 **OpenAI Codex CLI**（`codex`）。
 
 ---
 
-## 暴露的 MCP 工具
+## 目录导航
 
-| 工具名 | 用途 | 核心能力 |
-| :--- | :--- | :--- |
-| `codex_quota_status` | 实时配额与路由 | 查询 `codex app-server` 获取 5 小时/7 天双窗口限额、精确重置时间、配额盈余比，并生成 10 档模型与推理强度建议（离线时自动降级读取本地会话日志）。 |
-| `codex_list_models` | 模型发现 | 列出当前本地 Codex CLI 可用的 GPT 模型（如 `gpt-6.2-sol`、`gpt-6.2-astra`）及支持的推理强度（`low` → `ultra`），自动翻页拉取全部上游模型，支持 `include_hidden`。 |
-| `codex_exec` | 非交互执行 | 预先校验 `cwd`，支持自定义 `sandbox`、`-p` `profile`、`-i` `images`（多模态传图）、`ephemeral: false` + `session_id` 多轮续接，以及 `background: true` 后台运行（支持 `request_id` 幂等去重；若上游未返回用量如中断运行会返回 `usageUnavailable: true`）。 |
-| `codex_review` | Git 差异审查 | 以严格 `read-only` 模式审查 `--uncommitted`、`--base <branch>`、`--commit <sha>` 或自定义 `focus` 审查重点，支持 `profile`、`request_id` 幂等去重及审查期间工作区变更检测（注：上游 `codex review` 不回传 token 用量，会返回 `usageUnavailable: true`）。 |
-| `codex_job_status` | 任务与会话查询 | 轮询后台任务（`wait_seconds` 最高 `120s`，含 `idleSeconds` 与 `toolCallsCount`）；不传 `job_id` 时可单次等待全部活跃任务并列出 `activeSessions`。 |
-| `codex_job_cancel` | 安全取消任务 | 取消排队中或运行中的任务并终止整棵子进程树（Windows 使用 Job Object，macOS/Linux 使用 `start_new_session` + `os.killpg`）。 |
+- [核心特性](#核心特性)
+- [MCP 工具一览](#mcp-工具一览)
+- [前置条件](#前置条件)
+- [安装与部署](#安装与部署)
+- [快速上手](#快速上手)
+- [环境变量](#环境变量)
+- [故障排查](#故障排查)
+- [运行测试](#运行测试)
+- [目录结构](#目录结构)
+- [开源协议](#开源协议)
+
+---
 
 ## 核心特性
 
-- **配额与重置时间感知路由**：自动判断 5 小时或 7 天窗口是否临近重置且存在富余配额（`use_it_or_lose_it`）、充裕、适中或即将耗尽，帮助主力 Agent 自动决定该用 `gpt-6.2-astra`（`xhigh`/`high`）还是保守省着用。
-- **彻底规避 MCP 3 分钟超时与高频轮询**：深度审计或大 Diff 审查传入 `background: true` 立即返回 `jobId`，支持 `codex_job_status(wait_seconds=90–120, include_results=true)`（30–60s 宿主用 `20–45`）单次合并等待多个后台任务。
-- **灵活超时与断点完整回收**：后台超时默认 `900s`/`1800s`（支持 `timeout_seconds: 0` 由 Agent 自主控制启停）；`background: true` 任务默认可续接（`ephemeral: false`），且超时/取消时直接返回完整的 `agentMessages` 与 `activityLog`，无需翻找本地日志。
-- **多模态传图与 Profile 复用**：通过 `codex_exec` 的 `images`（`-i`）直接把 UI 截图、报错截图喂给 GPT 看；通过 `profile`（`-p`）直接复用 `~/.codex` 中的个人配置档。
-- **多轮上下文续接与会话可见性**：首轮传 `ephemeral: false` 获取 `sessionId`，后续带上 `session_id` 即可保留完整上下文与 Prompt 缓存，随时可通过 `codex_job_status` 查看当前活跃会话。
-- **全平台深度兼容**：纯 Python 3.10+ 标准库（无需 `pip install`）；Windows 下自动直连原生 `codex.exe`（支持 x64 与 ARM64）并处理 UTF-8 / 本地编码（如 GBK/CP936）回退；全平台支持完整进程树清理。
+- **配额与重置时间感知路由**：实时查询 `codex app-server` 的 5 小时与 7 天限额窗口，自动识别 `use_it_or_lose_it`、`abundant`、`moderate`、`conserve` 等状态，帮主力 Agent 自动选择合适的模型与推理强度。
+- **彻底规避 MCP 客户端超时**：深度审计或大 Diff 审查通过 `background: true` 后台运行，使用 `codex_job_status` 单次合并收集多个活跃任务，并提供分档轮询建议（180s+ 宿主用 `90–120s`；30–60s 宿主用 `20–45s`）。
+- **断点可续接与完整状态回收**：后台任务默认落盘持久化（`ephemeral: false`），中断或暂停后可通过 `session_id` 无缝续接完整上下文并复用 Prompt 缓存；超时或取消时直接返回捕获的 `agentMessages` 与 `activityLog`。
+- **多模态传图与 Profile 复用**：支持通过 `codex_exec` 的 `images`（`-i`）传入本地截图，或通过 `profile`（`-p`）直接复用 `~/.codex` 中的个人配置档。
+- **零依赖全平台兼容**：纯 Python 3.10+ 标准库实现；Windows 下自动定位原生 `codex.exe`（支持 x64/ARM64）并兼容 UTF-8 / 本地编码（如 GBK/CP936）输出；全平台支持完整子进程树清理。
 
-## 兼容性与 Antigravity 独占功能
+## MCP 工具一览
 
-| 组件 | 适用范围 | 说明 |
+| 工具名 | 用途 | 核心能力 |
 | :--- | :--- | :--- |
-| `server/codex_mcp_server.py` | **全平台 / 全 Agent 通用（Win/macOS/Linux）** | 标准 JSON-RPC 2.0 MCP stdio 服务端，提供全部 6 个工具。 |
-| `skills/codex-delegate/`（`SKILL.md` + `references/playbook.md`） | **跨 Agent 通用**（含 Antigravity 备注） | 标准 `SKILL.md` 工作流，兼容 Antigravity、Claude Code、Cursor、Pi 等；Antigravity 专属细节已在文中单独标注。 |
-| `rules/AGENTS.md` | **跨 Agent 通用**（含 Antigravity 备注） | 精简常驻规则，兼容支持 `AGENTS.md` 的各类 Agent。 |
-| `plugin.json` 与 `mcp_config.json` | **Antigravity 独占** | 使用 Antigravity 插件清单与 `${PLUGIN_ROOT}` 变量（自动挂载为 `codex-bridge_codex-bridge`）。 |
-| `.claude-plugin/`（`plugin.json`、`marketplace.json`）与 `.mcp.json` | **Claude Code 独占** | 标准 Claude Code 插件与市场清单，使用 `${CLAUDE_PLUGIN_ROOT}` 自动加载 MCP 服务与 `codex-delegate` 技能。 |
-| `agents/codex_worker.md` | **Antigravity 独占** | 使用 Antigravity 子代理 frontmatter 规范（`subagent: true`、`call_mcp_tool`、`view_file` 等）。 |
-| `RefreshMcpServers` 热重载接口（见 `AGENTS.md`） | **Antigravity 独占** | 仅用于在运行中的 Antigravity IDE 内单独热重载本 MCP 服务。 |
+| `codex_quota_status` | 实时配额与路由 | 查询实时 5h/7d 窗口、重置时间、配额盈余比与 10 档调度建议（默认对 `account.email` 脱敏；离线时自动降级读取本地会话日志）。 |
+| `codex_list_models` | 模型发现 | 列出本地 Codex CLI 可用的 GPT 模型（如 `gpt-6.2-sol`、`gpt-6.2-astra`）及支持的推理强度（`low` → `ultra`），自动翻页拉取全部上游模型。 |
+| `codex_exec` | 非交互执行 | 预先校验 `cwd`，支持 `sandbox`、`profile`（`-p`）、`images`（`-i`）、`session_id` 多轮续接、`background: true` 与 `request_id` 幂等去重；上游未返回用量时返回 `usageUnavailable: true`。 |
+| `codex_review` | Git 差异审查 | 只读审查 `--uncommitted`、`--base <branch>`、`--commit <sha>` 或自定义 `focus`，支持 `profile` 与工作区变更检测（因上游 `codex review` 不回传 token 计数，固定返回 `usageUnavailable: true`）。 |
+| `codex_job_status` | 任务与会话查询 | 轮询后台任务（`wait_seconds`、`idleSeconds`、`toolCallsCount`），省略 `job_id` 时可单次等待全部活跃任务并列出 `activeSessions`。 |
+| `codex_job_cancel` | 安全取消任务 | 取消排队或运行中的任务并终止整棵子进程树（Windows 使用 Job Object；POSIX 使用进程组 `SIGTERM`/`SIGKILL`）。 |
 
 ---
 
@@ -50,299 +60,181 @@
 
 1. 已安装并登录 **OpenAI Codex CLI**：
    ```bash
-   codex --version       # 期望输出：codex-cli <版本号>（如 0.172.0）
+   codex --version       # 期望输出：codex-cli <版本号>
    codex login status    # 期望输出：Logged in using ChatGPT
    ```
-2. 系统 `PATH` 中包含 **Python 3.10+**（纯标准库实现，无需安装第三方包）：
+2. 系统 `PATH` 中包含 **Python 3.10+**：
    ```bash
-   python --version      # 期望输出：Python 3.10+（如 3.11.5）
+   python --version      # 期望输出：Python 3.10+
    ```
 
 ---
 
-## 安装与配置
+## 安装与部署
 
-请根据你使用的客户端选择对应的接入步骤：
+按**专用原生插件 → 通用 MCP 客户端**及常见使用频率排序，点击直达对应客户端：
 
-### 1. Antigravity（开箱即用一体化插件）
+- [1. Claude Code 与 Claude Desktop](#1-claude-code-与-claude-desktop) — 原生插件、Release `.plugin`、GitHub 市场同步与 CLI
+- [2. Antigravity](#2-antigravity) — 开箱即用一体化插件（MCP + Skill + Rule + `codex_worker` 子代理）
+- [3. DeepSeek Harness](#3-deepseek-harness) — DSH 原生插件包或 `cordis.patch.yml`
+- [4. 通用 MCP 客户端](#4-通用-mcp-客户端) — Cursor、Windsurf、WorkBuddy 与通用 JSON 手动配置
 
-Antigravity 会把 **MCP 服务、Skill（`codex-delegate`）、Rule（`rules/AGENTS.md`）以及子代理（`codex_worker`）** 作为一个完整插件自动全部加载。
+---
 
-- **方式 A — 直接克隆到 Antigravity 插件目录**（最简单）：
+### 1. Claude Code 与 Claude Desktop
+
+本仓库内置符合官方规范的 `.claude-plugin/plugin.json`、`.claude-plugin/marketplace.json` 与 `.mcp.json`（已通过 `claude plugin validate` 校验）。
+
+#### Claude Desktop
+
+1. **推荐 — 从 [GitHub Releases](https://github.com/longpi233/codex-bridge/releases/latest) 下载 `.plugin` 插件包上传**：
+   - 前往 Release 附件下载 **`codex-bridge.plugin`** *（已剔除 Antigravity 专属文件，离线可用；也可在本地克隆后运行 `python scripts/pack_claude_plugin.py` 构建）*。
+   - 在 Claude Desktop 打开 **Settings…（设置）** → **Customize（自定义）** → **Plugins（插件）** → **Upload local plugin**，拖入或选择 `codex-bridge.plugin`。
+2. **或直接通过 GitHub 市场在线同步**：
+   - 打开 **Customize（自定义）** → **Plugins（插件）** → **+ Add** → **Add marketplace**。
+   - 在 **URL** 填写 `longpi233/codex-bridge` 并点击 **Sync**，随后安装 `codex-bridge`。
+3. **若 6 个工具未出现** *（桌面 GUI 进程未继承终端 `PATH` 或命中 Windows Store 存根）*：
+   - 打开 **Settings… → Developer → Edit Config**（Windows 为 `%APPDATA%\Claude\claude_desktop_config.json`，macOS 为 `~/Library/Application Support/Claude/claude_desktop_config.json`），直接参考下方 [第 4 节通用 MCP 客户端](#4-通用-mcp-客户端) 的 JSON 模板填入 **`python` 绝对路径**，保存后在系统托盘 / 菜单栏**彻底退出（Quit）并重启** Claude Desktop。
+
+#### Claude Code
+
+- **原生插件安装（推荐）**：
+  ```text
+  # Claude Code 2.1.275+
+  /plugin install codex-bridge --marketplace longpi233/codex-bridge
+
+  # 或分步安装（兼容所有带 /plugin 命令的版本）
+  /plugin marketplace add longpi233/codex-bridge
+  /plugin install codex-bridge@codex-bridge
+  /reload-plugins
+  ```
+  也可直接加载本地仓库：`claude --plugin-dir /path/to/codex-bridge`。
+- **手动 CLI 注册** *（请使用 `add-json`；在 `2.1.332` 等版本中 `claude mcp add ... -- python -u ...` 会报错 `unknown option '-u'`）*：
+  ```bash
+  git clone https://github.com/longpi233/codex-bridge.git /path/to/codex-bridge
+  claude mcp add-json codex-bridge '{"command":"python","args":["-u","/path/to/codex-bridge/server/codex_mcp_server.py"]}'
+  claude mcp get codex-bridge   # 期望输出：Status: √ Connected
+  ```
+  *（在 `codex-bridge` 前加 `-s user` 可全局注册；Skill 与 Rule 手动安装请参考 [第 4 节](#4-通用-mcp-客户端)，对应路径为 `~/.claude/skills/codex-delegate` 与 `~/.claude/CLAUDE.md`。）*
+
+> **提示**：通过 GitHub 市场或 `--plugin-dir` 安装时会一并扫入 `agents/codex_worker.md`（使用 Antigravity 专属 frontmatter），在 Claude Code / Claude Desktop 中请直接由主 Agent 搭配 `codex-delegate` 调用工具，不要调用 `codex_worker`。
+
+---
+
+### 2. Antigravity
+
+Antigravity 会自动将 **MCP 服务（`codex-bridge_codex-bridge`）、`codex-delegate` Skill、`rules/AGENTS.md` 规则以及 `codex_worker` 子代理**作为一体化插件加载。
+
+- **方式 A — 直接克隆到 Antigravity 插件目录**：
   - **macOS / Linux**：
     ```bash
     git clone https://github.com/longpi233/codex-bridge.git ~/.gemini/config/plugins/codex-bridge
     ```
-  - **Windows（PowerShell）**：
+  - **Windows（PowerShell）** *（PowerShell 5.1 不会为 `git.exe` 展开 `~`，请使用 `$env:USERPROFILE`）*：
     ```powershell
     git clone https://github.com/longpi233/codex-bridge.git "$env:USERPROFILE\.gemini\config\plugins\codex-bridge"
     ```
-    *（Windows 自带 PowerShell 5.1 不会为 `git.exe` 等原生命令展开 `~`，可能误建名为 `~` 的文件夹，请始终使用 `$env:USERPROFILE`。）*
   - **Windows（`cmd`）**：
     ```cmd
     git clone https://github.com/longpi233/codex-bridge.git "%USERPROFILE%\.gemini\config\plugins\codex-bridge"
     ```
-
-- **方式 B — 克隆到自定义目录并注册**（推荐习惯集中管理仓库的开发者使用）：
-  1. 先将仓库克隆到你习惯的目录：
-     ```bash
-     git clone https://github.com/longpi233/codex-bridge.git /path/to/codex-bridge
-     ```
-  2. 在 `~/.gemini/config/plugins.json` 中注册该目录：
-     ```json
-     {
-       "entries": [
-         {
-           "path": "/path/to/parent-folder-containing-codex-bridge",
-           "include_only": ["codex-bridge"]
-         }
-       ]
-     }
-     ```
-     或者直接链接到 `~/.gemini/config/plugins/codex-bridge`：
-     - **macOS / Linux**：
-       ```bash
-       ln -s /path/to/codex-bridge ~/.gemini/config/plugins/codex-bridge
-       ```
-     - **Windows（cmd）**：
-       ```cmd
-       mklink /J "%USERPROFILE%\.gemini\config\plugins\codex-bridge" "C:\path\to\codex-bridge"
-       ```
-
-`mcp_config.json` 已使用 `${PLUGIN_ROOT}/server/codex_mcp_server.py`，在 Antigravity 中无需手改任何路径。
+- **方式 B — 克隆到其他目录并在 `~/.gemini/config/plugins.json` 中注册**：
+  ```json
+  { "entries": [{ "path": "/path/to/parent-folder", "include_only": ["codex-bridge"] }] }
+  ```
 
 ---
 
-### 2. Claude Code（原生插件安装推荐 / 手动 CLI 注册）
+### 3. DeepSeek Harness
 
-本项目已内置符合官方规范的 `.claude-plugin/plugin.json`、`.claude-plugin/marketplace.json` 与 `.mcp.json`（已通过 `claude plugin validate` 校验）。
+DSH 不使用 JSON 格式的 `mcp.json`，而是通过 Cordis 原生插件包（`package.json` + `cordis.patch.yml`）或 profile 补丁层注册 MCP 服务。
 
-- **方式 A — 作为 Claude Code 原生插件安装（推荐，自动配好 MCP + Skill）**：
-  - **一步安装（Claude Code 2.1.275 及以上）**：
-    ```text
-    /plugin install codex-bridge --marketplace longpi233/codex-bridge
-    ```
-  - **或分步安装（兼容支持 `/plugin` 的 Claude Code 版本）**：
-    ```text
-    /plugin marketplace add longpi233/codex-bridge
-    /plugin install codex-bridge@codex-bridge
-    /reload-plugins
-    ```
-  - **本地开发 / 从已克隆目录临时加载**：
-    ```bash
-    claude --plugin-dir /path/to/codex-bridge
-    ```
-  *（无论从市场安装还是 `--plugin-dir` 加载，都会自动激活 `codex-bridge` MCP 服务与 `codex-delegate` 技能；同时会扫入 `agents/codex_worker.md`，但该文件包含 Antigravity 专属 frontmatter 工具名，在 Claude Code 中请由主 Agent 搭配 `codex-delegate` 直接调用 `codex-bridge` 工具，不要调用 `codex_worker`。）*
+- **方式 A — 作为 DSH 原生插件包安装（推荐）**：
+  1. 将仓库克隆到固定目录（`git clone https://github.com/longpi233/codex-bridge.git /path/to/codex-bridge`）。
+  2. 通过 DSH 插件管理（`install_bundle`）指向该目录即可，插件包会自动定位 Python（或 `CODEX_BRIDGE_PYTHON`）与 `codex_mcp_server.py`、配置 `toolCallTimeoutMs: 1800000`，并在检测到已有 `codex-bridge` 行时自动禁用自身避免冲突。
+  3. 将 `skills/codex-delegate/` 复制到 `~/.dsh/skills/codex-delegate`（`.agents/skills/` 对 DSH 不生效）。
 
-- **方式 B — 手动 CLI 注册（`claude mcp add-json` + Skill）**：
-  1. **克隆仓库**：
-     ```bash
-     git clone https://github.com/longpi233/codex-bridge.git /path/to/codex-bridge
-     ```
-  2. **注册并校验 MCP 服务**：
-     ```bash
-     claude mcp add-json codex-bridge '{"command":"python","args":["-u","/path/to/codex-bridge/server/codex_mcp_server.py"]}'
-     claude mcp get codex-bridge
-     ```
-     *（Windows 下路径请使用正斜杠，如 `C:/path/to/codex-bridge/server/codex_mcp_server.py`；`claude mcp get` 期望看到 `Status: √ Connected`；如需全局生效可在 `codex-bridge` 前加上 `-s user`。注：在 Claude Code 2.1.332 等版本中 `claude mcp add ... -- python -u ...` 会直接报错 `error: unknown option '-u'`，请改用 `add-json`，且切勿去掉 `-u`，否则管道 stdout 块缓冲会导致客户端卡死。）*
-  3. **安装 `codex-delegate` Skill 与 Rule（可选）**：
-     - **全局安装**：将 `skills/codex-delegate` 链接或复制到 `~/.claude/skills/codex-delegate`（macOS/Linux：`ln -s /path/to/codex-bridge/skills/codex-delegate ~/.claude/skills/codex-delegate`；Windows `cmd`：`mklink /J "%USERPROFILE%\.claude\skills\codex-delegate" "C:\path\to\codex-bridge\skills\codex-delegate"`）。
-     - **单项目安装**：复制到 `<你的项目>/.claude/skills/codex-delegate`。
-     - **Rule**：将 [`rules/AGENTS.md`](./rules/AGENTS.md) 追加到 `~/.claude/CLAUDE.md`（或项目的 `CLAUDE.md`）。
+- **方式 B — 手动写入 Profile 补丁层** *（若旧 profile 因 pnpm v10/v11 报错 `ERR_PNPM_UNEXPECTED_STORE`，可用此方式绕过 pnpm）*：
+  在 `~/.dsh/profiles/<profile>/cordis.patch.yml` 追加（先确认无重复 `serverName: codex-bridge`），保存即热重载生效：
+  ```yaml
+  - insert:
+      - id: codex-bridge-mcp
+        name: '@deepseek-ai/dsh-mcp-client'
+        config:
+          serverName: codex-bridge
+          transport: stdio
+          command: 'C:\Python311\python.exe'    # 必须填绝对路径
+          args: ['-u', 'D:\tools\codex-bridge\server\codex_mcp_server.py']
+          cwd: 'D:\tools\codex-bridge'
+          toolCallTimeoutMs: 1800000            # 必填：DSH 默认 60000ms 会截断长轮询
+          failOnStartupError: true
+  ```
+  > DSH 默认 `60000` ms 超时会截断长轮询，但后台 Codex 任务仍在运行，再次调用 `codex_job_status` 即可取回结果；建议配置 `toolCallTimeoutMs: 1800000`，或将 `wait_seconds` 控制在 `20–45`。
 
 ---
 
-### 3. Claude Desktop（macOS / Windows 桌面客户端）
+### 4. 通用 MCP 客户端
 
-Claude Desktop 支持直接通过 GitHub 仓库添加插件市场（**Add marketplace**）、上传本地干净的 `.plugin` / `.zip` 插件包，以及手动配置 `claude_desktop_config.json` 三种接入方式。
+适用于 **Cursor**、**Windsurf**、**WorkBuddy** 及手动配置 **Claude Desktop** 的用户。
 
-#### 方式 A：通过 GitHub 市场同步安装（最快 — 无需本地克隆或打包）
-
-1. 打开 Claude Desktop，进入 **Customize（自定义）** → **Plugins（插件）** → **+ Add** → **Add marketplace**。
-2. 在 **URL** 栏输入 `longpi233/codex-bridge`（或 `https://github.com/longpi233/codex-bridge.git`），点击 **Sync**。
-3. 同步完成后安装 `codex-bridge`，即可一步启用全部 6 个基于 `${CLAUDE_PLUGIN_ROOT}` 的 MCP 工具并安装 `codex-delegate` 技能。
-- *（注：与 Claude Code 的市场安装一致，此方式同样会扫入包含 Antigravity 专属 frontmatter 的 `agents/codex_worker.md`——请直接通过主 Agent 搭配 `codex-delegate` 调用工具，不要调用 `codex_worker`。若因桌面端未继承 `PATH` 中的 `python` 导致 6 个工具未出现，请改用下方**方式 C**。）*
-
-#### 方式 B：上传本地 `.plugin` 插件包（纯净包，不含 Antigravity 专属文件）
-
-1. **克隆仓库并打入干净的 Claude 插件包**：
-   ```bash
-   git clone https://github.com/longpi233/codex-bridge.git
-   cd codex-bridge
-   python scripts/pack_claude_plugin.py
-   ```
-   该脚本会生成 `dist/codex-bridge.plugin`，仅包含 `.claude-plugin/plugin.json`、`.mcp.json`、`server/codex_mcp_server.py`、`skills/codex-delegate/` 与 `LICENSE`（自动排除 `agents/codex_worker.md` 等 Antigravity 专用文件）。
-
-2. **在 Claude Desktop 中上传**：
-   - 打开 **Settings…（设置）** → **Customize（自定义）** → **Plugins（插件）** → **Upload local plugin**。
-   - 拖入或选择 `dist/codex-bridge.plugin`。
-   - 上传启用后，会一步自动注册基于本地 `stdio`（`${CLAUDE_PLUGIN_ROOT}`）的全部 6 个 MCP 工具并安装 `codex-delegate` Skill。
-   - **若 6 个工具未出现**：插件包内的 `.mcp.json` 使用裸 `"command": "python"`；如果桌面端 GUI 进程未继承终端 `PATH`（或命中 Windows Store 的 `python` 存根），请改用下方**方式 C** 并填写 `python.exe` / `python3` 的绝对路径。
-
-#### 方式 C：手动配置 `claude_desktop_config.json`（适合自定义 `python` 路径 / `env` 或仅装 MCP）
-
-如果桌面端未继承终端 `PATH` 导致找不到 `python`，或需要显式指定 `CODEX_BIN` / `CODEX_HOME` / `CODEX_DEFAULT_MODEL` 等环境变量、或仅想接入 MCP 而不装插件包，可使用此方式：
-
-1. **克隆仓库到本地**：
-   ```bash
-   git clone https://github.com/longpi233/codex-bridge.git /path/to/codex-bridge
-   ```
-
-2. **打开 Claude Desktop 的配置文件**：
-   - 在 Claude Desktop 菜单中打开 **Settings…（设置）** → **Developer（开发者）** → **Edit Config（编辑配置）**，或直接编辑以下路径：
-     - **Windows**：`%APPDATA%\Claude\claude_desktop_config.json`
-     - **macOS**：`~/Library/Application Support/Claude/claude_desktop_config.json`
-
-3. **在 `mcpServers` 中添加 `codex-bridge`**（桌面 GUI 应用通常不会继承终端 `PATH`，强烈建议**同时填写 `python` 与 `codex_mcp_server.py` 的绝对路径**，可通过 `where python` 或 `which python3` 查询）：
-   - **Windows 示例**：
-     ```json
-     {
-       "mcpServers": {
-         "codex-bridge": {
-           "command": "C:/path/to/python.exe",
-           "args": [
-             "-u",
-             "C:/path/to/codex-bridge/server/codex_mcp_server.py"
-           ]
-         }
-       }
-     }
-     ```
-   - **macOS 示例**：
-     ```json
-     {
-       "mcpServers": {
-         "codex-bridge": {
-           "command": "/usr/local/bin/python3",
-           "args": [
-             "-u",
-             "/path/to/codex-bridge/server/codex_mcp_server.py"
-           ]
-         }
-       }
-     }
-     ```
-
-4. **彻底退出并重启 Claude Desktop**：
-   - 仅关闭窗口不会生效，必须在系统托盘 / 菜单栏 **完全退出（Quit）** 后重新打开。
-   - 若工具未出现，可在 **Settings → Developer → Open Logs Folder** 查看启动日志定位路径或 Python 环境问题。
-
----
-
-### 4. Cursor、Windsurf、WorkBuddy 及其他 MCP 客户端（配置 MCP + 安装 Skill 与 Rule）
-
-> **配置文件归属对照（切勿混用模板）**：
->
-> | 客户端 | 配置文件 / 路径 | 路径变量 | 默认 server key → 工具名前缀 |
-> | :--- | :--- | :--- | :--- |
-> | **Antigravity** | `mcp_config.json`（内置） | `${PLUGIN_ROOT}` | `codex-bridge_codex-bridge`（`call_mcp_tool`） |
-> | **Claude Code / Desktop 插件** | `.mcp.json`（内置） | `${CLAUDE_PLUGIN_ROOT}` | `codex-bridge` → `mcp__codex-bridge__<tool>` |
-> | **WorkBuddy / Cursor / Windsurf** | `~/.workbuddy/mcp.json`、`.workbuddy/mcp.json`、`~/.cursor/mcp.json` | 仅限绝对路径 | `codex_bridge` → `mcp__codex_bridge__<tool>` |
-> | **DSH（见第 5 节）** | `~/.dsh/profiles/<profile>/cordis.patch.yml` | 绝对路径（YAML） | `codex-bridge` → `mcp__codex-bridge__<tool>` |
->
-> **严禁**把 `mcp_config.json`（含 `${PLUGIN_ROOT}`）或 `.mcp.json`（含 `${CLAUDE_PLUGIN_ROOT}`）复制到 Cursor、WorkBuddy 或 DSH。实际前缀以客户端工具列表显示为准。
+> **切勿**把仓库内的 `mcp_config.json`（含 `${PLUGIN_ROOT}`）或 `.mcp.json`（含 `${CLAUDE_PLUGIN_ROOT}`）直接复制到这些客户端——通用宿主无法解析插件路径变量，且桌面端 GUI 常不继承终端 `PATH`。
 
 1. **克隆仓库**：
    ```bash
    git clone https://github.com/longpi233/codex-bridge.git /path/to/codex-bridge
    ```
-
-2. **在客户端的 MCP 配置文件中添加 `codex-bridge`**（例如 `~/.cursor/mcp.json`、`.cursor/mcp.json`、Windows 用户级 `%USERPROFILE%\.workbuddy\mcp.json` 或项目级 `<项目>\.workbuddy\mcp.json`，以及 Windsurf 的 `mcp_config.json`；**DSH** 请直接看下方**第 5 节**）：
-
+2. **在客户端配置中添加 `codex_bridge`**（例如 `~/.cursor/mcp.json`、`%USERPROFILE%\.workbuddy\mcp.json` / `.workbuddy/mcp.json`、Windsurf 的 `mcp_config.json` 或 Claude Desktop 的 `claude_desktop_config.json`）：
    ```json
    {
      "mcpServers": {
        "codex_bridge": {
          "command": "/path/to/python",
-         "args": [
-           "-u",
-           "/path/to/codex-bridge/server/codex_mcp_server.py"
-         ]
+         "args": ["-u", "/path/to/codex-bridge/server/codex_mcp_server.py"]
        }
      }
    }
    ```
-   - **Python 绝对路径**：请将 `"/path/to/python"` 替换为本机实际解释器路径（例如 Windows 用正斜杠 `"C:/Python311/python.exe"`，macOS/Linux 用 `"/usr/local/bin/python3"`；裸 `"python"` 仅在 GUI 继承终端 `PATH` 时可用）。
-   - **针对短超时或未验证调用上限的宿主**：即便小改动同步 `codex_review` 实测也需 ~45 秒以上，因此在单次调用上限较短（30–60s）或尚未验证的宿主上（例如 WorkBuddy 中 `mcp.json` 的 `timeout` 仅控制连接启动超时而非单次工具调用上限），`codex_review` 及所有 `medium` 以上任务**必须**使用 `background: true`，且将 `codex_job_status` 的 `wait_seconds` 控制在 `20`–`45` 秒（除非宿主配置如 DSH 的 `toolCallTimeoutMs` 已确认调大）。另请注意：`jobId` 仅在当前服务端进程生命周期内有效，而 `sessionId`（`background: true` 默认持久化）由 Codex CLI 落盘保存，重启后仍可续接。
+   - 请将 `"/path/to/python"` 替换为真实解释器路径（Windows 建议用正斜杠如 `C:/Python311/python.exe`，macOS/Linux 如 `/usr/local/bin/python3`）。
+   - **WorkBuddy 激活步骤**：保存 `mcp.json` 后**必须完全退出并重启 WorkBuddy**，进入 **连接器管理 → 右上角自定义连接器** 对 `codex_bridge` 点击 **信任**，待状态灯变绿后 6 个工具才会注入。
+   - **短超时或未验证调用上限的宿主** *（如 WorkBuddy）*：即便单 commit 同步 `codex_review` 实测也需 ~45s+，因此建议对 `codex_review` 与所有 `medium` 以上任务强制使用 `background: true`，并将 `wait_seconds` 控制在 `20–45`。
+3. **安装 Skill 与 Rule**（推荐）：
+   - **Skill**：将 `skills/codex-delegate/` 复制或软链接到对应目录（`~/.agents/skills/codex-delegate`、`.cursor/skills/codex-delegate`、`~/.workbuddy/skills/codex-delegate`、`.codebuddy/skills/codex-delegate` 或 `~/.dsh/skills/codex-delegate`）。
+   - **Rule**：将 [`rules/AGENTS.md`](./rules/AGENTS.md) 合并到项目根目录 `AGENTS.md` 或客户端规则目录。
 
-3. **在 WorkBuddy 中激活与信任（看到工具的必要步骤）**：
-   - 写入 `%USERPROFILE%\.workbuddy\mcp.json`（或 `<项目>\.workbuddy\mcp.json`）后，**必须完全退出并重启 WorkBuddy**。
-   - 打开 **连接器管理 → 右上角自定义连接器**，对 `codex_bridge` 点击 **信任**，确认状态灯变绿后 6 个 `mcp__codex_bridge__*` 工具才会正式注入（修改 `.py` 后同样需要重启生效）。
-
-4. **安装 `codex-delegate` Skill 与 Rule**（推荐）：
-   - **安装 Skill**：将 `skills/codex-delegate/` 复制或软链接到对应客户端的技能目录：
-     - 通用跨 Agent 规范路径（Cursor / Pi / Codex 等）：`.agents/skills/codex-delegate` 或 `~/.agents/skills/codex-delegate`
-     - Cursor / WorkBuddy 路径：`.cursor/skills/codex-delegate`、`~/.workbuddy/skills/codex-delegate` 或 `.codebuddy/skills/codex-delegate`
-     - DeepSeek Harness (DSH) 路径：`~/.dsh/skills/codex-delegate`（注意：`.agents/skills/` 对 DSH 不生效）
-   - **安装 Rule**：将 [`rules/AGENTS.md`](./rules/AGENTS.md) 合并到项目根目录的 `AGENTS.md`（或客户端规则目录，如 `.cursor/rules/`、`.codebuddy/rules/`）。
-
----
-
-### 5. DeepSeek Harness (DSH)
-
-DSH **不使用** JSON 格式的 `mcp.json`，其 MCP 服务通过 Cordis 补丁层注册，Skill 目录位于 `~/.dsh/skills/`。
-
-1. **追加条目到 `~/.dsh/profiles/<profile>/cordis.patch.yml`**（顶层为 YAML 列表；先检查文件中是否已有同名 `serverName: codex-bridge` — bash 用 `grep serverName cordis.patch.yml`，PowerShell 用 `Select-String -Path cordis.patch.yml -Pattern serverName` — 以免与旧条目或包安装冲突）：
-   ```yaml
-   - insert:
-       - id: codex-bridge-mcp
-         name: '@deepseek-ai/dsh-mcp-client'
-         config:
-           serverName: codex-bridge
-           transport: stdio
-           command: 'C:\Python311\python.exe'      # 请写绝对路径：DSH 不会继承终端 PATH
-           args: ['-u', 'D:\tools\codex-bridge\server\codex_mcp_server.py']
-           cwd: 'D:\tools\codex-bridge'
-           toolCallTimeoutMs: 1800000              # 必填 — 见第 3 步说明
-           failOnStartupError: true
-   ```
-   *（如果 DSH 的 `install_bundle` 因已有 profile 的 `pnpm` v10/v11 store 版本冲突报错 `ERR_PNPM_UNEXPECTED_STORE`，直接写入 `cordis.patch.yml` 即可绕过 pnpm。）*
-
-2. **保存即热重载**：Loader 会热加载补丁，**无需重启 DSH**。6 个工具会以 `mcp__codex-bridge__<tool>`（连字符形式，与 Claude Code 一致）注册上线。
-
-3. **必须设置 `toolCallTimeoutMs: 1800000`**：DSH 默认单次调用超时为 `60000` ms，会导致 `wait_seconds=90` 的 `codex_job_status` 轮询在 60 秒处被砍断报 `Error: Request timed out`；配置 `1800000` 后长轮询（实测 88.6s）可正常返回，否则请将 `wait_seconds` 控制在 `20`–`45`。
-
-4. **超时后任务不会丢失**：宿主层的 RPC 超时**不会杀死 MCP 子进程或后台 Codex 任务**——再次调用 `codex_job_status` 即可取回已完成的完整结果。
-
-5. **安装 Skill**：将 `skills/codex-delegate/` 复制到 `~/.dsh/skills/codex-delegate`（Windows 下为 `C:\Users\<用户名>\.dsh\skills\codex-delegate`）。
+| 客户端 | 默认 server key | 暴露的工具名格式 |
+| :--- | :--- | :--- |
+| **Antigravity** | `codex-bridge_codex-bridge` | `call_mcp_tool`（`ServerName` 参数） |
+| **Claude Code / Desktop / DSH** | `codex-bridge` | `mcp__codex-bridge__<tool>` |
+| **WorkBuddy / Cursor** | `codex_bridge` | `mcp__codex_bridge__<tool>` |
 
 ---
 
-## 快速上手示例
+## 快速上手
 
-接入完成后，可以直接这样对你的主力 Agent 说：
+接入完成后，可以直接这样对主力 Agent 说：
 
-- *“查一下我现在的 Codex 配额和重置时间，推荐一下现在该用哪个 GPT 模型和推理强度。”*
-- *“让 Codex（`gpt-6.2-astra`）用只读后台模式帮我审查一下当前未提交的代码改动，重点看并发和边界条件。”*
-- *“用 `codex_exec` 把这张报错/UI 截图传给 GPT，结合 `src/App.tsx` 帮我排查问题。”*
+- *“查一下我现在的 Codex 配额和重置时间，推荐现在该用哪个 GPT 模型和推理强度。”*
+- *“让 Codex（`gpt-6.2-astra`）用只读后台模式审查当前未提交的代码改动，重点看并发和边界条件。”*
+- *“用 `codex_exec` 把这张截图传给 GPT，结合 `src/App.tsx` 帮我排查对齐问题。”*
 
-## 可选环境变量
+---
+
+## 环境变量
 
 | 环境变量 | 说明 |
 | :--- | :--- |
-| `CODEX_BIN` | 当 `codex` / `codex.exe` 未在 `PATH` 中自动识别时，显式指定其可执行文件路径。 |
-| `CODEX_HOME` | 自定义 Codex 状态与认证目录（默认为 `~/.codex`）。 |
-| `CODEX_DEFAULT_MODEL` | 当未传 `model` 且未设 `profile` 时的可选默认模型 ID（未配置则直接交由 Codex CLI 自身默认模型决定）。 |
-| `CODEX_BRIDGE_LOG_FILE` | 可选的结构化 JSONL 诊断日志文件路径（默认关闭，绝不写入 `stderr`）。 |
-| `CODEX_BRIDGE_INCLUDE_EMAIL` | 设为 `1` 时在 `codex_quota_status` 中返回未脱敏的 `account.email`（默认打码）。 |
+| `CODEX_BIN` | 显式指定 `codex` / `codex.exe` 路径（未在 `PATH` 中识别时使用）。 |
+| `CODEX_HOME` | 自定义 Codex 认证与状态目录（默认为 `~/.codex`）。 |
+| `CODEX_DEFAULT_MODEL` | 未传 `model` 与 `profile` 时的默认模型 ID（未设置则遵循 Codex CLI 默认配置）。 |
+| `CODEX_BRIDGE_LOG_FILE` | 可选的结构化 JSONL 诊断日志文件路径（默认关闭，不写入 `stderr`）。 |
+| `CODEX_BRIDGE_INCLUDE_EMAIL` | 设为 `1` 时在 `codex_quota_status` 中返回未脱敏的 `account.email`。 |
+| `CODEX_BRIDGE_PYTHON` | 为 DSH 原生插件包（`cordis.patch.yml`）显式指定 Python 路径。 |
 
-## 运行测试
+---
 
-运行离线单元测试、并发/取消测试与 CLI 参数测试（不消耗任何模型配额）：
+## 故障排查
 
-```bash
-python tests/test_codex_bridge.py
-```
-
-运行包含真实 Codex CLI / `app-server` 的冒烟测试（使用 `gpt-6-luna` `low`，根据是否触发工具调用实测基线约消耗 2.3 万–11 万 input tokens；配额紧张时请跳过）：
-
-```bash
-python tests/test_codex_bridge.py --live
-```
-
-## 故障排查与服务端自检
-
-如果客户端中未出现工具，可先不经任何客户端直接通过 stdio 验证服务端本身是否正常：
+如果客户端里没有出现工具，请先直接通过 stdio 自检服务端本身：
 
 - **Windows（PowerShell）**：
   ```powershell
@@ -361,46 +253,47 @@ python tests/test_codex_bridge.py --live
     | python -u server/codex_mcp_server.py
   ```
 
-症状判读与处理建议：
-
-| 现象 | 根因判断与处理 |
+| 现象 | 原因判断与处理 |
 | :--- | :--- |
-| **stdio 自检正常返回 2 行 JSON**（含 6 个工具），**但客户端中仍看不到工具** | 服务端健康，卡在客户端激活。**WorkBuddy**：完全退出并重启后在“自定义连接器”中点击信任；**Claude Desktop**：从托盘/菜单栏完全退出重开。 |
-| **状态灯变红 / 启动失败** | 检查 JSON 语法、`python` 绝对路径（勿用裸 `"python"`）、`CODEX_BIN` / `CODEX_HOME`，或临时开启 `CODEX_BRIDGE_LOG_FILE` 排查请求日志。 |
-| **自检无输出或报 traceback** | 检查 Python 版本（需 `3.10+`）及客户端启动日志。 |
-| **自检卡住不退出也不输出** | 检查是否漏掉了 `-u` 参数（缺少 `-u` 会导致管道 stdout 块缓冲）。 |
+| **自检返回 2 行 JSON**（`initialize` + 6 个工具的 `tools/list`），**但客户端中看不到工具** | 服务端正常，问题在客户端激活或路径配置。**WorkBuddy**：彻底退出重启并在自定义连接器中点击信任；**Claude Desktop**：从托盘彻底退出重开，或改用 [第 4 节](#4-通用-mcp-客户端) 填写 Python 绝对路径。 |
+| **状态灯变红 / 启动报错** | 检查 JSON/YAML 语法、`python` 绝对路径、`CODEX_BIN` / `CODEX_HOME`，或临时开启 `CODEX_BRIDGE_LOG_FILE` 排查。 |
+| **自检卡住无输出** | 确认参数包含 `-u`（缺少 `-u` 会导致 stdout 块缓冲）。 |
+
+---
+
+## 运行测试
+
+```bash
+# 离线单元测试、并发/取消与畸形报文测试（零配额消耗）
+python tests/test_codex_bridge.py
+
+# 真实 Codex CLI / app-server 冒烟测试（gpt-6-luna low，约消耗 2.3 万–11 万 input tokens）
+python tests/test_codex_bridge.py --live
+```
+
+---
 
 ## 目录结构
 
 ```text
 codex-bridge/
-├── .claude-plugin/
-│   ├── plugin.json                    # Claude Code 插件清单
-│   └── marketplace.json               # Claude Code 市场清单
-├── .mcp.json                          # Claude Code MCP 配置（使用 ${CLAUDE_PLUGIN_ROOT}）
+├── assets/logo.png                    # 项目与多端插件图标
+├── .claude-plugin/                    # Claude Code / Desktop 插件与市场清单
+├── .mcp.json                          # Claude 插件 MCP 配置（${CLAUDE_PLUGIN_ROOT}）
 ├── plugin.json                        # Antigravity 插件清单
-├── mcp_config.json                    # Antigravity MCP 配置（使用 ${PLUGIN_ROOT}）
-├── AGENTS.md                          # 供修改本仓库代码的 AI Agent 阅读的指南
-├── README.md                          # 项目说明与配置文档（English）
-├── README_CN.md                       # 项目说明与配置文档（简体中文）
-├── LICENSE                            # MIT 开源协议
-├── .gitignore
-├── scripts/
-│   └── pack_claude_plugin.py          # 从白名单打包干净的 dist/codex-bridge.plugin
-├── server/
-│   └── codex_mcp_server.py            # 跨平台、零依赖的 MCP stdio 服务端
-├── skills/
-│   └── codex-delegate/
-│       ├── SKILL.md                   # 渐进式披露的 Codex 委派技能
-│       └── references/
-│           └── playbook.md            # 即复制即用的 MCP 参数调用示例
-├── agents/
-│   └── codex_worker.md                # Antigravity 专属子代理定义
-├── rules/
-│   └── AGENTS.md                      # 精简的委派规则
-└── tests/
-    └── test_codex_bridge.py           # 离线单元测试与可选 --live 测试套件
+├── mcp_config.json                    # Antigravity MCP 配置（${PLUGIN_ROOT}）
+├── package.json                       # DSH 原生插件包清单
+├── cordis.patch.yml                   # DSH 原生 Cordis 补丁定义
+├── locale/                            # DSH 本地化元数据（en.json, zh.json）
+├── server/codex_mcp_server.py         # 跨平台、零依赖的 MCP stdio 服务端
+├── skills/codex-delegate/             # 跨 Agent 委派工作流与调用手册
+├── agents/codex_worker.md             # Antigravity 专属子代理定义
+├── rules/AGENTS.md                    # 精简的常驻委派规则
+├── scripts/pack_claude_plugin.py      # 打包 Claude Desktop 专用 dist/codex-bridge.plugin
+└── tests/test_codex_bridge.py         # 离线与可选 --live 测试套件
 ```
+
+---
 
 ## 开源协议
 

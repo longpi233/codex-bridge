@@ -1,348 +1,240 @@
 # Codex GPT Bridge (`codex-bridge`)
 
-English | [简体中文](./README_CN.md)
+<p align="center">
+  <img src="./assets/logo.png" alt="codex-bridge logo" width="220" />
+</p>
 
-`Python 3.10+` · `Zero Dependencies` · `MCP stdio` · `Windows / macOS / Linux` · `MIT License`
+<p align="center">
+  <strong>English</strong> | <a href="./README_CN.md">简体中文</a>
+</p>
+
+<p align="center">
+  <code>Python 3.10+</code> · <code>Zero Dependencies</code> · <code>MCP stdio</code> · <code>Windows / macOS / Linux</code> · <code>MIT License</code>
+</p>
 
 > **Tired of GPT's defensive lecturing, robotic hedging, and refusal-flavored walls of text? Had enough of arguing with GPT just to get a straight answer?**
 >
-> Put an MCP bridge in between: let your sweet, empathetic **Gemini** (or whatever favorite AI agent you already love working with) do the talking with GPT under the hood. You keep all of GPT's heavy-duty reasoning and code-review horsepower — while your main agent handles the back-and-forth, filters the attitude, and translates every finding back to you in plain, pleasant human language. **Never stress over GPT not speaking human again.**
+> Put an MCP bridge in between: let **Gemini**, **Claude**, or whichever main coding agent you already love handle the conversation under the hood. You keep all of GPT's heavy-duty reasoning and code-review horsepower — while your main agent manages the back-and-forth, filters the attitude, and translates every finding back to you in plain human language.
 
-A cross-platform, zero-dependency **MCP stdio server** and **native plugin (Antigravity & Claude Code)** that connects AI coding agents (**Antigravity, Claude Code, Claude Desktop, DeepSeek Harness (DSH), Cursor, Windsurf, WorkBuddy, and any MCP stdio client**) to your local OpenAI Codex CLI (`codex`) on **Windows, macOS, and Linux**.
+**`codex-bridge`** is a cross-platform, zero-dependency **MCP stdio server** and **native plugin** (for **Claude Code / Claude Desktop**, **Antigravity**, and **DeepSeek Harness / DSH**) that connects AI coding agents to your local **OpenAI Codex CLI** (`codex`) on Windows, macOS, and Linux.
 
 ---
 
-## Available MCP Tools
+## Table of Contents
 
-| Tool | Purpose | Key Capabilities |
-| :--- | :--- | :--- |
-| `codex_quota_status` | Live quota & routing | Queries `codex app-server` for 5h/7d rate-limit windows, exact reset times, surplus pacing ratio, and a 10-tier routing recommendation (falls back to session logs if offline). |
-| `codex_list_models` | Model discovery | Lists available Codex GPT models (e.g., `gpt-6.2-sol`, `gpt-6.2-astra`) and supported reasoning efforts (`low` → `ultra`), automatically follows upstream pagination, and supports `include_hidden`. |
-| `codex_exec` | Prompt execution | Runs non-interactive tasks with upfront `cwd` check, configurable `sandbox`, `-p` `profile`, `-i` `images` (multimodal), `ephemeral: false` + `session_id` resume, and `background: true` (with idempotent `request_id`; sets `usageUnavailable: true` when upstream omits usage, e.g., interrupted runs). |
-| `codex_review` | Git diff review | Read-only review of `--uncommitted`, `--base <branch>`, `--commit <sha>`, or custom `focus` instructions, with optional `profile`, idempotent `request_id`, and workspace-change detection (note: upstream `codex review` does not report token usage, returning `usageUnavailable: true`). |
-| `codex_job_status` | Job & session tracking | Polls background jobs (`wait_seconds` up to `120s`, `idleSeconds`, `toolCallsCount`), waits on all active jobs when `job_id` is omitted, and lists `activeSessions`. |
-| `codex_job_cancel` | Safe cancellation | Cancels queued or running jobs and kills the full child process tree (Windows Job Object on Windows; `start_new_session` + `os.killpg` on macOS/Linux). |
+- [Key Features](#key-features)
+- [Available Tools](#available-tools)
+- [Prerequisites](#prerequisites)
+- [Installation and Setup](#installation-and-setup)
+- [Quick Start](#quick-start)
+- [Environment Variables](#environment-variables)
+- [Troubleshooting](#troubleshooting)
+- [Running Tests](#running-tests)
+- [Project Structure](#project-structure)
+- [License](#license)
+
+---
 
 ## Key Features
 
-- **Quota- & Reset-Time-Aware Task Routing**: Knows when your 5-hour or 7-day quota is about to reset with unused balance (`use_it_or_lose_it`), abundant, moderate, or nearly exhausted—so your main agent picks the right model and reasoning effort automatically.
-- **No More 3-Minute MCP Timeouts**: Pass `background: true` for deep `gpt-6.2-astra` (`high`/`xhigh`) audits or large git diffs, then collect results in one batch with `codex_job_status(wait_seconds=90–120, include_results=true)` (or `20–45` on 30–60s hosts).
-- **Flexible Timeouts & Resumable Recovery**: Defaults to `900s`/`1800s` (or `timeout_seconds: 0` for agent-controlled runs). Background `codex_exec` jobs are resumable (`ephemeral: false`) by default, and timed-out/cancelled runs return full captured `agentMessages` and `activityLog` directly—no hunting through log files.
-- **Multimodal & Config Profile Support**: Attach screenshots or diagrams to `codex_exec` via `images` (`-i`), or pass `profile` (`-p`) to reuse your `~/.codex` config profiles.
-- **Multi-Turn Context Continuity**: Set `ephemeral: false` on the first turn to obtain a `sessionId`, resume it with full context and prompt caching, and inspect `activeSessions` anytime.
-- **Built for Windows, macOS & Linux**: Zero external Python packages (standard library only), native `codex.exe` detection on Windows (x64 & ARM64), UTF-8 / locale (e.g. CP936/GBK) decoding fallback, and full process-tree cleanup across all OSes.
+- **Quota- and Reset-Aware Routing**: Queries live 5-hour and 7-day rate-limit windows (`codex app-server`) to detect `use_it_or_lose_it`, `abundant`, `moderate`, or `conserve` states so your main agent chooses the right model and reasoning effort automatically.
+- **No MCP Client Timeouts**: Offloads heavy audits or large diffs via `background: true` and batch-collects active jobs in one call (`codex_job_status`), with host-aware `wait_seconds` guidance (`90–120s` for 180s+ hosts; `20–45s` for 30–60s hosts).
+- **Resumable Sessions and Clean Recovery**: Background jobs persist sessions by default (`ephemeral: false`) so interrupted or paused runs can resume with full context and prompt caching, while returning captured `agentMessages` and `activityLog` directly.
+- **Multimodal and Config Profiles**: Pass local screenshots to `codex_exec` via `images` (`-i`) or reuse your `~/.codex` config profiles via `profile` (`-p`).
+- **Zero-Dependency Cross-OS Support**: Uses only the Python 3.10+ standard library, detects native `codex.exe` on Windows (x64/ARM64) with UTF-8 / locale decoding fallback, and cleans up full process trees across Windows, macOS, and Linux.
 
-## Compatibility & Antigravity-Exclusive Features
+## Available Tools
 
-| Component | Scope | Notes |
+| Tool | Purpose | Key Capabilities |
 | :--- | :--- | :--- |
-| `server/codex_mcp_server.py` | **Universal (All MCP clients, Win/macOS/Linux)** | Standard JSON-RPC 2.0 MCP stdio server exposing all 6 tools. |
-| `skills/codex-delegate/` (`SKILL.md` + `references/playbook.md`) | **Cross-Agent** (with Antigravity notes) | Standard `SKILL.md` workflow compatible with Antigravity, Claude Code, Cursor, Pi, etc. Antigravity-specific notes are clearly marked. |
-| `rules/AGENTS.md` | **Cross-Agent** (with Antigravity note) | Concise always-on delegation rule compatible with any agent supporting `AGENTS.md`. |
-| `plugin.json` & `mcp_config.json` | **Antigravity-Exclusive** | Uses Antigravity's plugin manifest and `${PLUGIN_ROOT}` variable (mounted as `codex-bridge_codex-bridge`). |
-| `.claude-plugin/` (`plugin.json`, `marketplace.json`) & `.mcp.json` | **Claude Code-Exclusive** | Native Claude Code plugin & marketplace manifests using `${CLAUDE_PLUGIN_ROOT}` to auto-load the MCP server + `codex-delegate` skill. |
-| `agents/codex_worker.md` | **Antigravity-Exclusive** | Uses Antigravity subagent frontmatter (`subagent: true`, `call_mcp_tool`, `view_file`, etc.). |
-| `RefreshMcpServers` reload endpoint (in `AGENTS.md`) | **Antigravity-Exclusive** | Hot-reloads only this MCP server inside a running Antigravity IDE instance. |
+| `codex_quota_status` | Live quota & routing | Queries live 5h/7d windows, reset timestamps, surplus pacing ratio, and a 10-tier recommendation (masks `account.email` by default; falls back to session logs offline). |
+| `codex_list_models` | Model discovery | Lists available Codex GPT models (e.g. `gpt-6.2-sol`, `gpt-6.2-astra`) and supported reasoning efforts (`low` → `ultra`), following upstream pagination automatically. |
+| `codex_exec` | Prompt execution | Non-interactive execution with `cwd` check, `sandbox`, `profile` (`-p`), `images` (`-i`), `session_id` multi-turn resume, `background: true`, and idempotent `request_id`. Sets `usageUnavailable: true` when upstream omits usage. |
+| `codex_review` | Git diff review | Read-only review of `--uncommitted`, `--base <branch>`, `--commit <sha>`, or custom `focus` instructions with `profile` and workspace-change checks (sets `usageUnavailable: true` since upstream `codex review` omits token counts). |
+| `codex_job_status` | Job & session tracking | Polls background jobs (`wait_seconds`, `idleSeconds`, `toolCallsCount`), waits on all active jobs when `job_id` is omitted, and lists tracked `activeSessions`. |
+| `codex_job_cancel` | Safe cancellation | Cancels queued or running jobs and terminates the full child process tree (Windows Job Object on Windows; process-group `SIGTERM`/`SIGKILL` on POSIX). |
 
 ---
 
 ## Prerequisites
 
-1. **OpenAI Codex CLI** installed and authenticated:
+1. **OpenAI Codex CLI** installed and signed in:
    ```bash
-   codex --version       # Expected: codex-cli <version> (e.g., 0.172.0)
+   codex --version       # Expected: codex-cli <version>
    codex login status    # Expected: Logged in using ChatGPT
    ```
-2. **Python 3.10+** available on `PATH` (standard library only — no `pip install` needed):
+2. **Python 3.10+** available on `PATH`:
    ```bash
-   python --version      # Expected: Python 3.10+ (e.g., 3.11.5)
+   python --version      # Expected: Python 3.10+
    ```
 
 ---
 
-## Installation & Setup
+## Installation and Setup
 
-Choose the setup guide for your AI client below:
+Jump to your client (ordered from dedicated native plugins to generic MCP configuration):
 
-### 1. Antigravity (All-in-One Plugin)
+- [1. Claude Code and Claude Desktop](#1-claude-code-and-claude-desktop) — Native plugin, GitHub Marketplace, Release `.plugin`, and CLI
+- [2. Antigravity](#2-antigravity) — All-in-one plugin (MCP + Skill + Rule + `codex_worker` subagent)
+- [3. DeepSeek Harness (DSH)](#3-deepseek-harness) — Native Cordis plugin bundle or `cordis.patch.yml`
+- [4. Generic MCP Clients](#4-generic-mcp-clients) — Cursor, Windsurf, WorkBuddy, and manual JSON config
 
-Antigravity loads the **MCP server, Skill (`codex-delegate`), Rule (`rules/AGENTS.md`), and Subagent (`codex_worker`)** automatically as a single bundle.
+---
 
-- **Option A — Clone directly into Antigravity's plugins directory** (simplest):
+### 1. Claude Code and Claude Desktop
+
+`codex-bridge` ships standard Anthropic plugin manifests (`.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, `.mcp.json`) validated with `claude plugin validate`.
+
+#### Claude Desktop
+
+1. **Recommended — Upload `.plugin` from [GitHub Releases](https://github.com/longpi233/codex-bridge/releases/latest)**:
+   - Download **`codex-bridge.plugin`** from the latest Release Assets *(excludes Antigravity-only files and works offline; or build locally via `python scripts/pack_claude_plugin.py`)*.
+   - Open **Settings…** → **Customize** → **Plugins** → **Upload local plugin** and select `codex-bridge.plugin`.
+2. **Or Sync Directly from GitHub Marketplace**:
+   - Open **Customize** → **Plugins** → **+ Add** → **Add marketplace**.
+   - Enter `longpi233/codex-bridge` and click **Sync**, then install `codex-bridge`.
+3. **If the 6 tools do not appear** *(Claude Desktop's GUI does not inherit `python` on `PATH` or hits the Windows Store stub)*:
+   - Open **Settings… → Developer → Edit Config** (`%APPDATA%\Claude\claude_desktop_config.json` on Windows, `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS), paste the canonical JSON with your **absolute Python path** from [§4 Generic MCP Clients](#4-generic-mcp-clients), then **completely quit and relaunch** Claude Desktop from the system tray / menu bar.
+
+#### Claude Code
+
+- **Native Plugin (Recommended)**:
+  ```text
+  # Claude Code 2.1.275+
+  /plugin install codex-bridge --marketplace longpi233/codex-bridge
+
+  # Or two-step (all versions with /plugin)
+  /plugin marketplace add longpi233/codex-bridge
+  /plugin install codex-bridge@codex-bridge
+  /reload-plugins
+  ```
+  Or load a local clone directly: `claude --plugin-dir /path/to/codex-bridge`.
+- **Manual CLI Registration** *(use `add-json`; on some builds like `2.1.332`, `claude mcp add ... -- python -u ...` fails with `unknown option '-u'`)*:
+  ```bash
+  git clone https://github.com/longpi233/codex-bridge.git /path/to/codex-bridge
+  claude mcp add-json codex-bridge '{"command":"python","args":["-u","/path/to/codex-bridge/server/codex_mcp_server.py"]}'
+  claude mcp get codex-bridge   # Expected: Status: √ Connected
+  ```
+  *(Pass `-s user` before `codex-bridge` for global registration. To also add the skill/rule manually, see [§4 Generic MCP Clients](#4-generic-mcp-clients) with `~/.claude/skills/codex-delegate` and `~/.claude/CLAUDE.md`.)*
+
+> **Note for Marketplace / `--plugin-dir` users**: `agents/codex_worker.md` uses Antigravity-specific frontmatter, so in Claude Code / Claude Desktop simply invoke `codex-bridge` tools from the main agent with `codex-delegate` rather than invoking `codex_worker`.
+
+---
+
+### 2. Antigravity
+
+Antigravity automatically loads the **MCP server (`codex-bridge_codex-bridge`), `codex-delegate` Skill, `rules/AGENTS.md` Rule, and `codex_worker` subagent** together.
+
+- **Clone directly into Antigravity's plugins folder**:
   - **macOS / Linux**:
     ```bash
     git clone https://github.com/longpi233/codex-bridge.git ~/.gemini/config/plugins/codex-bridge
     ```
-  - **Windows (PowerShell)**:
+  - **Windows (PowerShell)** *(use `$env:USERPROFILE` — PowerShell 5.1 passes `~` literally to `git.exe`)*:
     ```powershell
     git clone https://github.com/longpi233/codex-bridge.git "$env:USERPROFILE\.gemini\config\plugins\codex-bridge"
     ```
-    *(Windows PowerShell 5.1 passes `~` literally to native binaries like `git.exe`, creating a `~` folder in the current directory; always use `$env:USERPROFILE` instead.)*
   - **Windows (`cmd`)**:
     ```cmd
     git clone https://github.com/longpi233/codex-bridge.git "%USERPROFILE%\.gemini\config\plugins\codex-bridge"
     ```
-
-- **Option B — Clone to a custom directory and register it** (recommended if you keep repos elsewhere):
-  1. Clone the repository to your preferred location:
-     ```bash
-     git clone https://github.com/longpi233/codex-bridge.git /path/to/codex-bridge
-     ```
-  2. Register it in `~/.gemini/config/plugins.json`:
-     ```json
-     {
-       "entries": [
-         {
-           "path": "/path/to/parent-folder-containing-codex-bridge",
-           "include_only": ["codex-bridge"]
-         }
-       ]
-     }
-     ```
-     Or create a symlink / directory junction into `~/.gemini/config/plugins/codex-bridge`:
-     - **macOS / Linux**:
-       ```bash
-       ln -s /path/to/codex-bridge ~/.gemini/config/plugins/codex-bridge
-       ```
-     - **Windows (cmd)**:
-       ```cmd
-       mklink /J "%USERPROFILE%\.gemini\config\plugins\codex-bridge" "C:\path\to\codex-bridge"
-       ```
-
-`mcp_config.json` uses `${PLUGIN_ROOT}/server/codex_mcp_server.py`, so no path edits are needed inside Antigravity.
+- **Or keep your clone elsewhere**: Clone anywhere and register its parent folder in `~/.gemini/config/plugins.json`:
+  ```json
+  { "entries": [{ "path": "/path/to/parent-folder", "include_only": ["codex-bridge"] }] }
+  ```
 
 ---
 
-### 2. Claude Code (Native Plugin — Recommended, or Manual CLI)
+### 3. DeepSeek Harness
 
-`codex-bridge` ships with standard Claude Code plugin manifests (`.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, `.mcp.json`) validated by `claude plugin validate`.
+DSH uses a Cordis plugin bundle (`package.json` + `cordis.patch.yml`) rather than a JSON `mcp.json`.
 
-- **Option A — Install as a Claude Code Plugin (Recommended)**:
-  - **One-step install (Claude Code 2.1.275+)**:
-    ```text
-    /plugin install codex-bridge --marketplace longpi233/codex-bridge
-    ```
-  - **Or two-step install (all Claude Code versions with `/plugin`)**:
-    ```text
-    /plugin marketplace add longpi233/codex-bridge
-    /plugin install codex-bridge@codex-bridge
-    /reload-plugins
-    ```
-  - **Local development / cloned repo**:
-    ```bash
-    claude --plugin-dir /path/to/codex-bridge
-    ```
-  *(Both marketplace install and `--plugin-dir` auto-activate the `codex-bridge` MCP server and `codex-delegate` skill. They also register `agents/codex_worker.md`, which uses Antigravity-only frontmatter tools (`call_mcp_tool`, `view_file`), so in Claude Code invoke the `codex-bridge` tools from the main agent using `codex-delegate` rather than invoking `codex_worker`.)*
+- **Option A — Native DSH Plugin Bundle (Recommended)**:
+  1. Clone to a permanent directory (`git clone https://github.com/longpi233/codex-bridge.git /path/to/codex-bridge`).
+  2. Install via DSH's Plugin Manager (`install_bundle` pointing at `/path/to/codex-bridge`). The bundle automatically locates Python (or `CODEX_BRIDGE_PYTHON`) and `codex_mcp_server.py`, sets `toolCallTimeoutMs: 1800000`, and disables itself if another `codex-bridge` row is already active.
+  3. Install the skill to `~/.dsh/skills/codex-delegate` (`.agents/skills/` does not apply to DSH).
 
-- **Option B — Manual CLI Registration (`claude mcp add-json` + Skill)**:
-  1. **Clone the repository**:
-     ```bash
-     git clone https://github.com/longpi233/codex-bridge.git /path/to/codex-bridge
-     ```
-  2. **Register and verify the MCP server**:
-     ```bash
-     claude mcp add-json codex-bridge '{"command":"python","args":["-u","/path/to/codex-bridge/server/codex_mcp_server.py"]}'
-     claude mcp get codex-bridge
-     ```
-     *(On Windows, use forward slashes like `C:/path/to/codex-bridge/server/codex_mcp_server.py`, and expect `Status: √ Connected` from `claude mcp get`. Add `-s user` before `codex-bridge` to register globally. Note: on some Claude Code builds such as `2.1.332`, `claude mcp add ... -- python -u ...` fails with `error: unknown option '-u'`—use `add-json` instead and never drop `-u`, or Python will block-buffer pipe stdout and appear to hang.)*
-  3. **Install the `codex-delegate` Skill & Rule** (optional):
-     - **Global**: link/copy `skills/codex-delegate` to `~/.claude/skills/codex-delegate` (macOS/Linux: `ln -s /path/to/codex-bridge/skills/codex-delegate ~/.claude/skills/codex-delegate`; Windows `cmd`: `mklink /J "%USERPROFILE%\.claude\skills\codex-delegate" "C:\path\to\codex-bridge\skills\codex-delegate"`).
-     - **Project-local**: copy into `<your-project>/.claude/skills/codex-delegate`.
-     - **Rule**: append [`rules/AGENTS.md`](./rules/AGENTS.md) into `~/.claude/CLAUDE.md` (or project `CLAUDE.md`).
+- **Option B — Manual Profile Patch** *(also bypasses `ERR_PNPM_UNEXPECTED_STORE` on older pnpm v10 profiles)*:
+  Append to `~/.dsh/profiles/<profile>/cordis.patch.yml` (check first with `grep serverName cordis.patch.yml` or PowerShell `Select-String -Path cordis.patch.yml -Pattern serverName` to avoid duplicate `serverName: codex-bridge`), then save to hot-reload without restarting DSH:
+  ```yaml
+  - insert:
+      - id: codex-bridge-mcp
+        name: '@deepseek-ai/dsh-mcp-client'
+        config:
+          serverName: codex-bridge
+          transport: stdio
+          command: 'C:\Python311\python.exe'    # absolute path required
+          args: ['-u', 'D:\tools\codex-bridge\server\codex_mcp_server.py']
+          cwd: 'D:\tools\codex-bridge'
+          toolCallTimeoutMs: 1800000            # required: DSH defaults to 60000ms
+          failOnStartupError: true
+  ```
+  > DSH's default `60000` ms timeout cuts long `codex_job_status` polls at 60s, though the background Codex job keeps running and can be collected on the next poll. Set `toolCallTimeoutMs: 1800000` or keep `wait_seconds` between `20` and `45`.
 
 ---
 
-### 3. Claude Desktop (macOS / Windows Desktop App)
+### 4. Generic MCP Clients
 
-Claude Desktop supports adding this repository directly as a GitHub plugin marketplace (**Add marketplace**), uploading a clean local `.plugin`/`.zip` archive, or configuring `claude_desktop_config.json` manually.
+Use this standard configuration for **Cursor**, **Windsurf**, **WorkBuddy**, or manual **Claude Desktop** setups.
 
-#### Option A: Add GitHub Marketplace (Fastest — No Local Clone or Packaging)
-
-1. Open Claude Desktop and go to **Customize** → **Plugins** → **+ Add** → **Add marketplace**.
-2. Enter `longpi233/codex-bridge` (or `https://github.com/longpi233/codex-bridge.git`) under **URL** and click **Sync**.
-3. Install `codex-bridge` from the synced marketplace to enable all 6 MCP tools (`${CLAUDE_PLUGIN_ROOT}`) and install the `codex-delegate` skill in one step.
-- *(Note: Like Claude Code's marketplace install, this also registers `agents/codex_worker.md` with Antigravity-only frontmatter — simply use the main agent with `codex-delegate` instead of invoking `codex_worker`. If the 6 tools do not appear because the Desktop GUI process does not inherit `python` in `PATH`, switch to **Option C** below.)*
-
-#### Option B: Upload `.plugin` Package (Clean Local Bundle Without Antigravity Files)
-
-1. **Clone the repository and build the clean plugin package**:
-   ```bash
-   git clone https://github.com/longpi233/codex-bridge.git
-   cd codex-bridge
-   python scripts/pack_claude_plugin.py
-   ```
-   This generates `dist/codex-bridge.plugin` containing only `.claude-plugin/plugin.json`, `.mcp.json`, `server/codex_mcp_server.py`, `skills/codex-delegate/`, and `LICENSE` (excluding Antigravity-only files such as `agents/codex_worker.md`).
-
-2. **Upload in Claude Desktop**:
-   - Open **Settings…** → **Customize** → **Plugins** → **Upload local plugin**.
-   - Drag or select `dist/codex-bridge.plugin`.
-   - This registers all 6 MCP tools via local `stdio` (`${CLAUDE_PLUGIN_ROOT}`) and installs the `codex-delegate` skill in one step.
-   - **If the 6 tools do not appear**: `.mcp.json` launches bare `"command": "python"`. If the Desktop GUI process does not inherit your shell `PATH` (or hits the Windows Microsoft Store `python` stub), switch to **Option C** below and specify an absolute `python.exe` / `python3` path.
-
-#### Option C: Manual `claude_desktop_config.json` (Custom `python` path / `env` or MCP only)
-
-Use this option if Claude Desktop's GUI process does not inherit `python` in `PATH`, or if you want to pass custom `env` variables (`CODEX_BIN`, `CODEX_HOME`, `CODEX_DEFAULT_MODEL`) or install only the MCP server without the plugin bundle.
+> **Do not** copy `mcp_config.json` (`${PLUGIN_ROOT}`) or `.mcp.json` (`${CLAUDE_PLUGIN_ROOT}`) into these clients — GUI apps cannot expand plugin root variables and often do not inherit your shell `PATH`.
 
 1. **Clone the repository**:
    ```bash
    git clone https://github.com/longpi233/codex-bridge.git /path/to/codex-bridge
    ```
-
-2. **Open Claude Desktop's MCP config file**:
-   - In Claude Desktop: open **Settings…** → **Developer** → **Edit Config** (or edit the file directly):
-     - **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
-     - **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
-
-3. **Add `codex-bridge` under `mcpServers`** (use absolute paths for both `python` and `codex_mcp_server.py` since GUI apps often do not inherit your shell `PATH`):
-   - **Windows**:
-     ```json
-     {
-       "mcpServers": {
-         "codex-bridge": {
-           "command": "C:/path/to/python.exe",
-           "args": [
-             "-u",
-             "C:/path/to/codex-bridge/server/codex_mcp_server.py"
-           ]
-         }
-       }
-     }
-     ```
-   - **macOS**:
-     ```json
-     {
-       "mcpServers": {
-         "codex-bridge": {
-           "command": "/usr/local/bin/python3",
-           "args": [
-             "-u",
-             "/path/to/codex-bridge/server/codex_mcp_server.py"
-           ]
-         }
-       }
-     }
-     ```
-
-4. **Fully Quit and Restart Claude Desktop**:
-   - Saving the JSON is not enough — **quit Claude Desktop completely** (from the system tray / menu bar) and relaunch it.
-   - If the tools do not appear, check **Settings → Developer → Open Logs Folder** for startup diagnostics (e.g., verify `python` path via `where python` on Windows or `which python3` on macOS).
-
----
-
-### 4. Cursor, Windsurf, WorkBuddy & Other MCP Clients (MCP Server + Skill & Rule)
-
-> **Config File Ownership (do not copy the wrong template)**:
->
-> | Client | Config Path | Path Variable | Default Server Key → Tool Prefix |
-> | :--- | :--- | :--- | :--- |
-> | **Antigravity** | `mcp_config.json` (built-in) | `${PLUGIN_ROOT}` | `codex-bridge_codex-bridge` (`call_mcp_tool`) |
-> | **Claude Code / Desktop Plugin** | `.mcp.json` (built-in) | `${CLAUDE_PLUGIN_ROOT}` | `codex-bridge` → `mcp__codex-bridge__<tool>` |
-> | **WorkBuddy / Cursor / Windsurf** | `~/.workbuddy/mcp.json`, `.workbuddy/mcp.json`, `~/.cursor/mcp.json` | Absolute paths only | `codex_bridge` → `mcp__codex_bridge__<tool>` |
-> | **DSH (Section 5)** | `~/.dsh/profiles/<profile>/cordis.patch.yml` | Absolute paths (YAML) | `codex-bridge` → `mcp__codex-bridge__<tool>` |
->
-> **Never** copy `mcp_config.json` (`${PLUGIN_ROOT}`) or `.mcp.json` (`${CLAUDE_PLUGIN_ROOT}`) into Cursor, WorkBuddy, or DSH. Check your host's actual tool list if unsure of the active prefix.
-
-1. **Clone the repository**:
-   ```bash
-   git clone https://github.com/longpi233/codex-bridge.git /path/to/codex-bridge
-   ```
-
-2. **Add `codex-bridge` to your client's MCP configuration** (e.g. `~/.cursor/mcp.json`, `.cursor/mcp.json`, Windows `%USERPROFILE%\.workbuddy\mcp.json` or project `<project>\.workbuddy\mcp.json`, or Windsurf's `mcp_config.json`; for **DSH**, see **Section 5** below):
-
+2. **Add `codex_bridge` to your client's MCP config** (`~/.cursor/mcp.json`, `.cursor/mcp.json`, `%USERPROFILE%\.workbuddy\mcp.json` / `.workbuddy/mcp.json`, Windsurf `mcp_config.json`, or Claude Desktop's `claude_desktop_config.json`):
    ```json
    {
      "mcpServers": {
        "codex_bridge": {
          "command": "/path/to/python",
-         "args": [
-           "-u",
-           "/path/to/codex-bridge/server/codex_mcp_server.py"
-         ]
+         "args": ["-u", "/path/to/codex-bridge/server/codex_mcp_server.py"]
        }
      }
    }
    ```
-   - **Absolute Python path**: Replace `"/path/to/python"` with your real interpreter path (e.g. `C:/Python311/python.exe` on Windows using forward slashes, or `/usr/local/bin/python3` on macOS/Linux; bare `"python"` only works if the GUI inherits your terminal `PATH`).
-   - **Hosts with short or unknown per-call timeouts**: Even a small sync `codex_review` can take ~45s+, so on hosts with short (30–60s) or unverified per-call ceilings (e.g. WorkBuddy, where `mcp.json` `timeout` governs connection startup rather than per-call execution), **always** use `background: true` for `codex_review` and `medium`+ tasks and keep `codex_job_status` `wait_seconds` at `20`–`45` (unless raised in host config, such as DSH's verified `toolCallTimeoutMs`). Note also that `jobId` is per-server-process, while `sessionId` (default for `background: true` jobs) is persisted to disk by Codex CLI and survives restarts.
+   - Replace `"/path/to/python"` with your real interpreter (e.g. `C:/Python311/python.exe` on Windows or `/usr/local/bin/python3` on macOS/Linux; bare `"python"` only works if the GUI inherits `PATH`).
+   - **WorkBuddy activation**: After saving `mcp.json`, **completely quit and restart WorkBuddy**, open **Connectors → Custom Connectors**, click **Trust** on `codex_bridge`, and confirm the green indicator.
+   - **Short / unknown call timeouts** *(e.g. WorkBuddy)*: Even a small sync `codex_review` can take ~45s+, so always pass `background: true` for `codex_review` and `medium`+ tasks, and keep `codex_job_status` `wait_seconds` at `20`–`45`.
+3. **Install the `codex-delegate` Skill & Rule** (recommended):
+   - **Skill**: Copy or link `skills/codex-delegate/` to `~/.agents/skills/codex-delegate`, `.cursor/skills/codex-delegate`, `~/.workbuddy/skills/codex-delegate`, `.codebuddy/skills/codex-delegate`, or `~/.dsh/skills/codex-delegate`.
+   - **Rule**: Copy [`rules/AGENTS.md`](./rules/AGENTS.md) into your project's `AGENTS.md` or client rules folder.
 
-3. **Activate in WorkBuddy (required before tools appear)**:
-   - After writing `%USERPROFILE%\.workbuddy\mcp.json` (or `<project>\.workbuddy\mcp.json`), **completely quit and restart WorkBuddy**.
-   - Open **Connectors / Custom Connectors**, click **Trust** on `codex_bridge`, and confirm the status indicator turns green. Only after trusting will all 6 `mcp__codex_bridge__*` tools be injected. (Python edits also require a full restart/reconnect.)
-
-4. **Install the `codex-delegate` Skill & Rule** (recommended):
-   - **Skill**: Copy or symlink `skills/codex-delegate/` into your agent's skill directory:
-     - Standard cross-agent path (Cursor / Pi / Codex / etc.): `.agents/skills/codex-delegate` or `~/.agents/skills/codex-delegate`
-     - Cursor / WorkBuddy paths: `.cursor/skills/codex-delegate`, `~/.workbuddy/skills/codex-delegate`, or `.codebuddy/skills/codex-delegate`
-     - DeepSeek Harness (DSH): `~/.dsh/skills/codex-delegate` (note: `.agents/skills/` does not apply to DSH)
-   - **Rule**: Copy [`rules/AGENTS.md`](./rules/AGENTS.md) into your project's `AGENTS.md` (or your client's rules directory, e.g. `.cursor/rules/` or `.codebuddy/rules/`).
-
----
-
-### 5. DeepSeek Harness (DSH)
-
-DSH does **not** use a JSON `mcp.json`. MCP servers are registered in a Cordis patch layer, and skills live in `~/.dsh/skills/`.
-
-1. **Append a server entry to `~/.dsh/profiles/<profile>/cordis.patch.yml`** (a top-level YAML list; check first with `grep serverName cordis.patch.yml` — or PowerShell: `Select-String -Path cordis.patch.yml -Pattern serverName` — so you do not insert a duplicate `codex-bridge` server if a bundle or previous entry exists):
-   ```yaml
-   - insert:
-       - id: codex-bridge-mcp
-         name: '@deepseek-ai/dsh-mcp-client'
-         config:
-           serverName: codex-bridge
-           transport: stdio
-           command: 'C:\Python311\python.exe'      # absolute path: DSH does not inherit your shell PATH
-           args: ['-u', 'D:\tools\codex-bridge\server\codex_mcp_server.py']
-           cwd: 'D:\tools\codex-bridge'
-           toolCallTimeoutMs: 1800000              # REQUIRED — see step 3
-           failOnStartupError: true
-   ```
-   *(If DSH's `install_bundle` hits `ERR_PNPM_UNEXPECTED_STORE` due to pnpm v10/v11 store mismatch in an existing profile, using `cordis.patch.yml` directly bypasses pnpm completely.)*
-
-2. **Save and hot-reload**: DSH's Loader hot-reloads the patch **without restarting DSH**. All 6 tools appear as `mcp__codex-bridge__<tool>` (hyphen form, matching Claude Code).
-
-3. **Set `toolCallTimeoutMs: 1800000` (required for long polls)**: DSH defaults to `60000` ms, which cuts a `wait_seconds=90` `codex_job_status` poll at 60s with `Error: Request timed out`. With `toolCallTimeoutMs: 1800000`, heavy polls (e.g. `88.6s`) return normally; otherwise keep `wait_seconds` between `20` and `45`.
-
-4. **Timeout recovery**: A host-side RPC timeout does **not** kill the MCP stdio server or the background Codex job — simply call `codex_job_status` again to collect the finished result.
-
-5. **Install the Skill**: Copy `skills/codex-delegate/` to `~/.dsh/skills/codex-delegate` (Windows: `C:\Users\<user>\.dsh\skills\codex-delegate`).
+| Client | Default Server Key | Exposed Tool Name |
+| :--- | :--- | :--- |
+| **Antigravity** | `codex-bridge_codex-bridge` | `call_mcp_tool` (`ServerName`) |
+| **Claude Code / Desktop / DSH** | `codex-bridge` | `mcp__codex-bridge__<tool>` |
+| **WorkBuddy / Cursor** | `codex_bridge` | `mcp__codex_bridge__<tool>` |
 
 ---
 
-## Quick Start Prompts
+## Quick Start
 
 Once connected, try asking your main agent:
 
-- *"Check my Codex quota and reset time, and tell me which GPT model and reasoning effort we should use right now."*
-- *"Ask Codex (`gpt-6.2-astra`) in read-only background mode to review our uncommitted changes for race conditions and edge cases."*
-- *"Send this UI screenshot to Codex via `codex_exec` (`images`) and ask it to check layout alignment against `src/App.tsx`."*
+- *"Check my Codex quota and reset time, and tell me which GPT model and reasoning effort we should use."*
+- *"Ask Codex (`gpt-6.2-astra`) in read-only background mode to review our uncommitted changes for race conditions."*
+- *"Send this screenshot to Codex via `codex_exec` (`images`) and check layout alignment against `src/App.tsx`."*
 
-## Optional Environment Variables
+---
+
+## Environment Variables
 
 | Variable | Description |
 | :--- | :--- |
-| `CODEX_BIN` | Explicit path to the `codex` / `codex.exe` binary if not auto-detected from `PATH`. |
-| `CODEX_HOME` | Custom Codex state/auth directory (defaults to `~/.codex`). |
-| `CODEX_DEFAULT_MODEL` | Optional fallback model id when `model` and `profile` are omitted (if unset, Codex CLI uses its own configured default). |
-| `CODEX_BRIDGE_LOG_FILE` | Optional file path for structured JSONL request/job diagnostic logs (disabled by default; never writes to `stderr`). |
-| `CODEX_BRIDGE_INCLUDE_EMAIL` | Set to `1` to return unmasked `account.email` in `codex_quota_status` (masked by default). |
+| `CODEX_BIN` | Explicit path to `codex` / `codex.exe` if not on `PATH`. |
+| `CODEX_HOME` | Custom Codex auth/state directory (defaults to `~/.codex`). |
+| `CODEX_DEFAULT_MODEL` | Fallback model id when `model` and `profile` are omitted (unset = Codex CLI default). |
+| `CODEX_BRIDGE_LOG_FILE` | Optional JSONL diagnostic log file path (off by default; never writes to `stderr`). |
+| `CODEX_BRIDGE_INCLUDE_EMAIL` | Set to `1` to return unmasked `account.email` in `codex_quota_status`. |
+| `CODEX_BRIDGE_PYTHON` | Optional explicit Python path for the native DSH bundle (`cordis.patch.yml`). |
 
-## Running Tests
+---
 
-Run the offline unit, concurrency, cancellation, and CLI-flag tests (consumes zero model quota):
+## Troubleshooting
 
-```bash
-python tests/test_codex_bridge.py
-```
-
-Include live Codex CLI / `app-server` smoke tests (measured baseline ~23k–110k input tokens on `gpt-6-luna` `low` depending on whether tool calls trigger; skip when quota is tight):
-
-```bash
-python tests/test_codex_bridge.py --live
-```
-
-## Troubleshooting & Server Self-Check
-
-If tools do not appear in your client, verify the MCP server directly over stdio first:
+Verify the MCP server directly over stdio before debugging client configs:
 
 - **Windows (PowerShell)**:
   ```powershell
@@ -361,46 +253,47 @@ If tools do not appear in your client, verify the MCP server directly over stdio
     | python -u server/codex_mcp_server.py
   ```
 
-How to read the output & next steps:
-
 | Symptom | Diagnosis & Fix |
 | :--- | :--- |
-| **Stdio self-check prints 2 JSON lines** (`initialize` + `tools/list` with 6 tools), **yet tools are missing in client** | Server is healthy; issue is client activation. **WorkBuddy**: completely quit, restart, and click **Trust** in Custom Connectors. **Claude Desktop**: completely quit from tray/menu bar and relaunch. |
-| **Client shows red status light / startup failure** | Check JSON syntax, absolute `python` path (avoid bare `"python"`), `CODEX_BIN` / `CODEX_HOME`, or temporarily set `CODEX_BRIDGE_LOG_FILE` to inspect incoming requests. |
-| **Self-check returns no output or traceback** | Verify Python `3.10+` and dependencies in `PATH`, and check client startup logs. |
-| **Self-check hangs without printing** | Ensure `-u` is passed to Python so pipe `stdout` is unbuffered. |
+| **Stdio returns 2 JSON lines** (`initialize` + `tools/list`), **but tools are missing in client** | Server is healthy; activation/config issue. **WorkBuddy**: quit, restart, and **Trust** in Custom Connectors. **Claude Desktop**: quit from tray/menu bar and relaunch (or switch to [§4](#4-generic-mcp-clients) with an absolute Python path). |
+| **Red status light / startup error** | Verify JSON/YAML syntax, absolute `python` path, `CODEX_BIN` / `CODEX_HOME`, or temporarily set `CODEX_BRIDGE_LOG_FILE`. |
+| **Hangs without output** | Ensure `-u` is passed to Python so pipe `stdout` is unbuffered. |
 
-## Directory Structure
+---
+
+## Running Tests
+
+```bash
+# Offline unit, concurrency, cancellation, and envelope tests (zero quota cost)
+python tests/test_codex_bridge.py
+
+# Live Codex CLI / app-server smoke tests (~23k–110k input tokens on gpt-6-luna low)
+python tests/test_codex_bridge.py --live
+```
+
+---
+
+## Project Structure
 
 ```text
 codex-bridge/
-├── .claude-plugin/
-│   ├── plugin.json                    # Claude Code plugin manifest
-│   └── marketplace.json               # Claude Code marketplace manifest
-├── .mcp.json                          # Claude Code plugin MCP config (${CLAUDE_PLUGIN_ROOT})
+├── assets/logo.png                    # Project & multi-client plugin icon
+├── .claude-plugin/                    # Claude Code / Desktop plugin & marketplace manifests
+├── .mcp.json                          # Claude plugin MCP config (${CLAUDE_PLUGIN_ROOT})
 ├── plugin.json                        # Antigravity plugin manifest
 ├── mcp_config.json                    # Antigravity MCP config (${PLUGIN_ROOT})
-├── AGENTS.md                          # Repo guide for AI agents modifying this codebase
-├── README.md                          # Documentation (English)
-├── README_CN.md                       # Documentation (简体中文)
-├── LICENSE                            # MIT License
-├── .gitignore
-├── scripts/
-│   └── pack_claude_plugin.py          # Builds clean dist/codex-bridge.plugin archive
-├── server/
-│   └── codex_mcp_server.py            # Cross-platform MCP stdio server (zero dependencies)
-├── skills/
-│   └── codex-delegate/
-│       ├── SKILL.md                   # Progressive-disclosure delegation skill
-│       └── references/
-│           └── playbook.md            # Copy-ready MCP tool argument recipes
-├── agents/
-│   └── codex_worker.md                # Antigravity subagent definition
-├── rules/
-│   └── AGENTS.md                      # Concise delegation rule
-└── tests/
-    └── test_codex_bridge.py           # Offline + optional --live test suite
+├── package.json                       # Native DSH bundle manifest
+├── cordis.patch.yml                   # Native DSH Cordis patch definition
+├── locale/                            # DSH localized metadata (en.json, zh.json)
+├── server/codex_mcp_server.py         # Cross-platform MCP stdio server (zero dependencies)
+├── skills/codex-delegate/             # Cross-agent delegation workflow & playbook
+├── agents/codex_worker.md             # Antigravity subagent definition
+├── rules/AGENTS.md                    # Concise always-on delegation rule
+├── scripts/pack_claude_plugin.py      # Builds dist/codex-bridge.plugin for Claude Desktop
+└── tests/test_codex_bridge.py         # Offline + optional --live test suite
 ```
+
+---
 
 ## License
 

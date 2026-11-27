@@ -14,6 +14,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 PLUGIN_FILES: tuple[str, ...] = (
     ".claude-plugin/plugin.json",
     ".mcp.json",
+    "assets/logo.png",
     "server/codex_mcp_server.py",
     "skills/codex-delegate/SKILL.md",
     "skills/codex-delegate/references/playbook.md",

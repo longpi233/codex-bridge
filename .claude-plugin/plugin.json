@@ -9,6 +9,7 @@
   "homepage": "https://github.com/longpi233/codex-bridge",
   "repository": "https://github.com/longpi233/codex-bridge",
   "license": "MIT",
+  "icon": "./assets/logo.png",
   "keywords": [
     "mcp",
     "codex",

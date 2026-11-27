@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Codex GPT Bridge",
+    "description": "Bridges DSH to your local OpenAI Codex CLI (gpt-6.2-sol / gpt-6.2-astra) for quota-aware delegation, git-diff code reviews, background jobs, and multimodal resume."
+  }
+}
