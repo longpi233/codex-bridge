@@ -383,6 +383,33 @@ def test_unit_fixes():
         mod.signal.SIGKILL = orig_sigkill
         mod._terminate_process_tree(fake_posix_proc, None)
         assert killpg_calls == [(42424, orig_sigterm), (42424, orig_sigkill)], killpg_calls
+
+        # Surviving grandchild after leader has already exited still gets SIGTERM -> SIGKILL
+        exited_leader = FakePosixProc()
+        exited_leader._alive = False
+        grandchild_alive = True
+        gc_calls = []
+
+        def fake_gc_killpg(pgid, sig):
+            nonlocal grandchild_alive
+            gc_calls.append((pgid, sig))
+            if sig == 0 and not grandchild_alive:
+                raise ProcessLookupError()
+            if sig == orig_sigkill:
+                grandchild_alive = False
+
+        mod.os.killpg = fake_gc_killpg
+        mod._terminate_process_tree(exited_leader, None)
+        assert gc_calls[0] == (42424, orig_sigterm) and gc_calls[-1] == (42424, orig_sigkill), gc_calls
+
+        # Already-reaped process must never signal a potentially recycled PGID
+        reaped_proc = FakePosixProc()
+        reaped_proc._alive = False
+        reaped_proc.returncode = 0
+        reaped_calls = []
+        mod.os.killpg = lambda pgid, sig: reaped_calls.append((pgid, sig))
+        mod._terminate_process_tree(reaped_proc, None)
+        assert reaped_calls == [], reaped_calls
     finally:
         mod.os.name = orig_os_name
         if orig_killpg is None:
@@ -577,7 +604,57 @@ time.sleep(10.0)
             else:
                 os.environ["CODEX_BRIDGE_LOG_FILE"] = old_log_env
 
-    # 18. Codex binary resolution (native codex.exe on Windows when installed via npm)
+    # 18. JSON-RPC id validation, session lock pinning under pruning, and packer self-overwrite guard
+    assert mod._is_valid_jsonrpc_id("abc") is True
+    assert mod._is_valid_jsonrpc_id(42) is True
+    assert mod._is_valid_jsonrpc_id(True) is False
+    assert mod._is_valid_jsonrpc_id([1, 2]) is False
+    assert mod._is_valid_jsonrpc_id({"k": "v"}) is False
+    assert mod._is_valid_jsonrpc_id(None) is False
+
+    with mod.SESSIONS_LOCK:
+        old_bindings = dict(mod.SESSION_BINDINGS)
+        old_locks = dict(mod.SESSION_RUN_LOCKS)
+        old_refs = dict(mod.SESSION_LOCK_REFS)
+        mod.SESSION_BINDINGS.clear()
+        mod.SESSION_RUN_LOCKS.clear()
+        mod.SESSION_LOCK_REFS.clear()
+    try:
+        pinned_lock = mod._acquire_session_lock_ref("pinned-sess")
+        with mod.SESSIONS_LOCK:
+            mod.SESSION_BINDINGS["pinned-sess"] = {"lastUsedAt": 1.0}
+            mod.SESSION_BINDINGS["old-unpinned"] = {"lastUsedAt": 2.0}
+            mod.SESSION_RUN_LOCKS["old-unpinned"] = threading.Lock()
+            for idx in range(mod.MAX_RETAINED_SESSIONS + 5):
+                sid = f"newer-{idx}"
+                mod.SESSION_BINDINGS[sid] = {"lastUsedAt": 100.0 + idx}
+                mod.SESSION_RUN_LOCKS[sid] = threading.Lock()
+            mod._prune_sessions_unlocked()
+            assert "pinned-sess" in mod.SESSION_BINDINGS and mod.SESSION_RUN_LOCKS.get("pinned-sess") is pinned_lock
+            assert "old-unpinned" not in mod.SESSION_BINDINGS
+        mod._release_session_lock_ref("pinned-sess")
+        assert "pinned-sess" not in mod.SESSION_LOCK_REFS
+    finally:
+        with mod.SESSIONS_LOCK:
+            mod.SESSION_BINDINGS.clear()
+            mod.SESSION_BINDINGS.update(old_bindings)
+            mod.SESSION_RUN_LOCKS.clear()
+            mod.SESSION_RUN_LOCKS.update(old_locks)
+            mod.SESSION_LOCK_REFS.clear()
+            mod.SESSION_LOCK_REFS.update(old_refs)
+
+    sys.path.insert(0, os.path.join(REPO_ROOT, "scripts"))
+    try:
+        import pack_claude_plugin
+        try:
+            pack_claude_plugin.build_plugin_archive(pack_claude_plugin.Path("LICENSE"))
+            raise AssertionError("Expected ValueError when --output points to LICENSE")
+        except ValueError:
+            pass
+    finally:
+        sys.path.pop(0)
+
+    # 19. Codex binary resolution (native codex.exe on Windows when installed via npm)
     codex_bin, env = mod._resolve_codex_command()
     print("Resolved codex_bin:", codex_bin)
     if os.name == "nt" and "codex-win32" in codex_bin.lower():
@@ -808,6 +885,30 @@ print(json.dumps({"type": "thread.started", "thread_id": "fake-exec-1"}))
         assert r_missing["isError"] is True, r_missing
         err_obj = json.loads(r_missing["content"][0]["text"])
         assert err_obj["error"]["code"] == "ValueError" and "__probe_missing_job__" in err_obj["error"]["message"], err_obj
+
+        # Malformed envelopes must return JSON-RPC errors without crashing or leaking CANCEL_EVENTS
+        send({"jsonrpc": "2.0", "id": [1, 2], "method": "ping", "params": {}})
+        err_bad_id = wait_id(None, timeout=2.0)["error"]
+        assert err_bad_id["code"] == -32600, err_bad_id
+        send({"jsonrpc": "2.0", "id": None, "method": "ping", "params": {}})
+        err_null_id = wait_id(None, timeout=2.0)["error"]
+        assert err_null_id["code"] == -32600, err_null_id
+        proc.stdin.write(('{"jsonrpc":"2.0","id":' + ("9" * 5000) + ',"method":"ping"}\n').encode("utf-8"))
+        proc.stdin.flush()
+        err_huge_id = wait_id(None, timeout=2.0)["error"]
+        assert err_huge_id["code"] == -32700, err_huge_id
+        send({"jsonrpc": "2.0", "id": 109, "method": "ping", "params": [1]})
+        err_bad_params = wait_id(109, timeout=2.0)["error"]
+        assert err_bad_params["code"] == -32602, err_bad_params
+        send({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": [99]}})
+        send({"jsonrpc": "2.0", "id": 107, "method": "tools/call", "params": {"name": "codex_quota_status", "arguments": ["bad"]}})
+        err_bad_args = wait_id(107, timeout=2.0)["error"]
+        assert err_bad_args["code"] == -32602, err_bad_args
+        send({"jsonrpc": "2.0", "id": 110, "method": "tools/call", "params": {"name": "codex_quota_status", "arguments": None}})
+        err_null_args = wait_id(110, timeout=2.0)["error"]
+        assert err_null_args["code"] == -32602, err_null_args
+        send({"jsonrpc": "2.0", "id": 108, "method": "ping", "params": {}})
+        assert wait_id(108, timeout=2.0)["result"] == {}
 
         send({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "codex_exec", "arguments": {"prompt": "slow", "background": True, "request_id": "req-1"}}})
         send({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "codex_exec", "arguments": {"prompt": "slow", "background": True, "request_id": "req-1"}}})

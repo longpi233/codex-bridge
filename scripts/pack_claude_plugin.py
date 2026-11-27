@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 import sys
 import zipfile
@@ -26,7 +27,12 @@ def build_plugin_archive(output_path: Path) -> Path:
     if missing:
         raise FileNotFoundError(f"Missing required plugin file(s): {', '.join(missing)}")
 
-    resolved_out = output_path if output_path.is_absolute() else (REPO_ROOT / output_path)
+    resolved_out = (output_path if output_path.is_absolute() else (REPO_ROOT / output_path)).resolve()
+    source_paths = {(REPO_ROOT / rel).resolve() for rel in PLUGIN_FILES}
+    if resolved_out in source_paths or (
+        resolved_out.exists() and any(os.path.samefile(resolved_out, src) for src in source_paths)
+    ):
+        raise ValueError(f"Refusing to overwrite whitelisted plugin source file: {resolved_out}")
     resolved_out.parent.mkdir(parents=True, exist_ok=True)
 
     with zipfile.ZipFile(resolved_out, "w", compression=zipfile.ZIP_DEFLATED) as zf:
@@ -60,6 +66,6 @@ def main(argv: list[str] | None = None) -> int:
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except FileNotFoundError as exc:
+    except (FileNotFoundError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         raise SystemExit(1)

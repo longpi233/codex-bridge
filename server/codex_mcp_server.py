@@ -69,6 +69,7 @@ JOB_SEMAPHORE = threading.Semaphore(MAX_CONCURRENT_JOBS)
 SESSIONS_LOCK = threading.Lock()
 SESSION_BINDINGS: dict[str, dict[str, Any]] = {}
 SESSION_RUN_LOCKS: dict[str, threading.Lock] = {}
+SESSION_LOCK_REFS: dict[str, int] = {}
 
 
 def _configure_stdio() -> None:
@@ -264,6 +265,21 @@ class _WinJobObject:
             from ctypes import wintypes
 
             kernel32 = ctypes.windll.kernel32
+            kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+            kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+            kernel32.SetInformationJobObject.argtypes = [
+                wintypes.HANDLE,
+                ctypes.c_int,
+                ctypes.c_void_p,
+                wintypes.DWORD,
+            ]
+            kernel32.SetInformationJobObject.restype = wintypes.BOOL
+            kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+            kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+            kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+            kernel32.TerminateJobObject.restype = wintypes.BOOL
+            kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+            kernel32.CloseHandle.restype = wintypes.BOOL
             self._kernel32 = kernel32
             h = kernel32.CreateJobObjectW(None, None)
             if not h:
@@ -303,8 +319,8 @@ class _WinJobObject:
                 ]
 
             info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
-            # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE (0x2000) | JOB_OBJECT_LIMIT_BREAKAWAY_OK (0x800)
-            info.BasicLimitInformation.LimitFlags = 0x2000 | 0x800
+            # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE (0x2000) without BREAKAWAY_OK so children cannot escape
+            info.BasicLimitInformation.LimitFlags = 0x2000
             JobObjectExtendedLimitInformation = 9
             ok = kernel32.SetInformationJobObject(
                 h,
@@ -319,18 +335,31 @@ class _WinJobObject:
         except Exception:
             self.handle = None
 
-    def assign(self, proc: subprocess.Popen[bytes]) -> None:
+    def assign(self, proc: subprocess.Popen[bytes]) -> bool:
         if os.name != "nt":
-            return
+            return True
+        handle_to_close = None
+        ok = False
         with self._lock:
             if not self.handle:
-                return
+                return False
             try:
                 proc_handle = getattr(proc, "_handle", None)
                 if proc_handle:
-                    self._kernel32.AssignProcessToJobObject(self.handle, int(proc_handle))
+                    ok = bool(self._kernel32.AssignProcessToJobObject(self.handle, int(proc_handle)))
+                if not ok:
+                    _log_event("job_object_assign_failed", pid=getattr(proc, "pid", None))
+                    handle_to_close, self.handle = self.handle, None
+            except Exception:
+                _log_event("job_object_assign_failed", pid=getattr(proc, "pid", None))
+                handle_to_close, self.handle = self.handle, None
+                ok = False
+        if handle_to_close:
+            try:
+                self._kernel32.CloseHandle(handle_to_close)
             except Exception:
                 pass
+        return ok
 
     def terminate_tree(self) -> None:
         if os.name != "nt":
@@ -360,36 +389,68 @@ def _terminate_process_tree(proc: subprocess.Popen[bytes], job_obj: _WinJobObjec
     if job_obj is not None:
         job_obj.terminate_tree()
     try:
-        if proc.poll() is None:
-            if os.name != "nt":
-                pgid = getattr(proc, "pid", None)
-                killed_group = False
-                if isinstance(pgid, int) and pgid > 0:
-                    try:
-                        os.killpg(pgid, signal.SIGTERM)
-                        killed_group = True
-                    except OSError:
+        already_reaped = getattr(proc, "returncode", None) is not None
+        if os.name != "nt":
+            if already_reaped:
+                if job_obj is not None:
+                    job_obj.close()
+                return
+            pgid = getattr(proc, "pid", None)
+            has_pgid = isinstance(pgid, int) and pgid > 0
+
+            def _pgid_alive() -> bool:
+                if not has_pgid:
+                    return False
+                try:
+                    os.killpg(pgid, 0)
+                    return True
+                except ProcessLookupError:
+                    return False
+                except PermissionError:
+                    return True
+                except OSError:
+                    return False
+
+            if has_pgid:
+                try:
+                    os.killpg(pgid, signal.SIGTERM)
+                except OSError:
+                    if proc.poll() is None:
                         proc.terminate()
-                else:
-                    proc.terminate()
-                try:
-                    proc.wait(timeout=2.0)
-                except subprocess.TimeoutExpired:
-                    if killed_group and isinstance(pgid, int) and pgid > 0:
-                        try:
-                            os.killpg(pgid, signal.SIGKILL)
-                        except OSError:
-                            proc.kill()
-                    else:
-                        proc.kill()
-                    proc.wait(timeout=2.0)
-            else:
+            elif proc.poll() is None:
                 proc.terminate()
+
+            deadline = time.monotonic() + 2.0
+            leader_timed_out = False
+            try:
+                proc.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                leader_timed_out = True
+
+            if not leader_timed_out and has_pgid:
+                while _pgid_alive() and time.monotonic() < deadline:
+                    time.sleep(0.05)
+
+            if leader_timed_out or proc.poll() is None or _pgid_alive():
+                if has_pgid:
+                    try:
+                        os.killpg(pgid, signal.SIGKILL)
+                    except OSError:
+                        if proc.poll() is None:
+                            proc.kill()
+                elif proc.poll() is None:
+                    proc.kill()
                 try:
                     proc.wait(timeout=2.0)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait(timeout=2.0)
+                except Exception:
+                    pass
+        elif proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=2.0)
         else:
             proc.wait(timeout=0.5)
     except Exception:
@@ -649,6 +710,22 @@ def _format_epoch_local(ts: Any) -> str | None:
         return None
 
 
+def _acquire_session_lock_ref(session_id: str) -> threading.Lock:
+    """Return a pinned mutex for session_id so concurrent pruning cannot evict it."""
+    with SESSIONS_LOCK:
+        SESSION_LOCK_REFS[session_id] = SESSION_LOCK_REFS.get(session_id, 0) + 1
+        return SESSION_RUN_LOCKS.setdefault(session_id, threading.Lock())
+
+
+def _release_session_lock_ref(session_id: str) -> None:
+    with SESSIONS_LOCK:
+        refs = SESSION_LOCK_REFS.get(session_id, 0)
+        if refs <= 1:
+            SESSION_LOCK_REFS.pop(session_id, None)
+        else:
+            SESSION_LOCK_REFS[session_id] = refs - 1
+
+
 def _prune_sessions_unlocked() -> None:
     if len(SESSION_BINDINGS) <= MAX_RETAINED_SESSIONS:
         return
@@ -661,6 +738,8 @@ def _prune_sessions_unlocked() -> None:
     for sid, _ in candidates:
         if removed >= excess:
             break
+        if SESSION_LOCK_REFS.get(sid, 0) > 0:
+            continue
         lock = SESSION_RUN_LOCKS.get(sid)
         if lock is not None and lock.locked():
             continue
@@ -1562,10 +1641,16 @@ def _launch_background_job(
             REQUEST_ID_TO_JOB[request_id] = job_id
         _log_event("job_queued", jobId=job_id, kind=kind, sessionId=session_id)
 
+    pinned_lock: threading.Lock | None = None
+    if session_id:
+        # Pin before spawning the worker so pruning cannot evict between validation and execution
+        pinned_lock = _acquire_session_lock_ref(session_id)
+
     def _worker() -> None:
         acquired = False
-        session_lock = None
+        session_lock = pinned_lock
         session_acquired = False
+        session_ref_held = bool(session_id and pinned_lock is not None)
         try:
             while not JOB_SEMAPHORE.acquire(timeout=0.5):
                 with JOBS_LOCK:
@@ -1583,9 +1668,7 @@ def _launch_background_job(
                     return
                 job_record["status"] = "starting"
 
-            if session_id:
-                with SESSIONS_LOCK:
-                    session_lock = SESSION_RUN_LOCKS.setdefault(session_id, threading.Lock())
+            if session_id and session_lock is not None:
                 while not session_lock.acquire(timeout=0.5):
                     with JOBS_LOCK:
                         if job_record["status"] in ("cancelling", "cancelled"):
@@ -1641,11 +1724,22 @@ def _launch_background_job(
         finally:
             if session_acquired and session_lock is not None:
                 session_lock.release()
+            if session_ref_held and session_id:
+                _release_session_lock_ref(session_id)
             if acquired:
                 JOB_SEMAPHORE.release()
             done_event.set()
 
-    threading.Thread(target=_worker, daemon=True).start()
+    try:
+        threading.Thread(target=_worker, daemon=True).start()
+    except Exception:
+        if session_id and pinned_lock is not None:
+            _release_session_lock_ref(session_id)
+        with JOBS_LOCK:
+            JOBS.pop(job_id, None)
+            if request_id and REQUEST_ID_TO_JOB.get(request_id) == job_id:
+                REQUEST_ID_TO_JOB.pop(request_id, None)
+        raise
     return {
         "jobId": job_id,
         "requestId": request_id,
@@ -1914,11 +2008,13 @@ def tool_exec(args: dict[str, Any], cancel_event: threading.Event | None = None)
 
     session_lock = None
     session_acquired = False
+    session_ref_held = False
     if session_id:
-        with SESSIONS_LOCK:
-            session_lock = SESSION_RUN_LOCKS.setdefault(session_id, threading.Lock())
+        session_lock = _acquire_session_lock_ref(session_id)
+        session_ref_held = True
         while not session_lock.acquire(timeout=0.5):
             if cancel_event is not None and cancel_event.is_set():
+                _release_session_lock_ref(session_id)
                 return {
                     "exitCode": -2,
                     "cancelled": True,
@@ -1940,6 +2036,8 @@ def tool_exec(args: dict[str, Any], cancel_event: threading.Event | None = None)
     finally:
         if session_acquired and session_lock is not None:
             session_lock.release()
+        if session_ref_held and session_id:
+            _release_session_lock_ref(session_id)
 
     res.update(meta)
     return res
@@ -2359,14 +2457,13 @@ def _handle_request(msg: dict[str, Any], cancel_event: threading.Event) -> None:
     method = msg.get("method")
     msg_id = msg.get("id")
     params = msg.get("params")
-    if params is None:
-        params = {}
-    if not isinstance(params, dict):
-        if msg_id is not None:
-            _send({"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32602, "message": "params must be an object"}})
-        return
-
     try:
+        if params is None:
+            params = {}
+        if not isinstance(params, dict):
+            if msg_id is not None:
+                _send({"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32602, "message": "params must be an object"}})
+            return
         if method == "initialize":
             req_ver = params.get("protocolVersion")
             negotiated_ver = (
@@ -2407,11 +2504,15 @@ def _handle_request(msg: dict[str, Any], cancel_event: threading.Event) -> None:
 
         if method == "tools/call":
             name = params.get("name")
-            args = params.get("arguments")
-            if args is None:
-                args = {}
+            if "arguments" not in params:
+                args: Any = {}
+            else:
+                args = params.get("arguments")
             if not isinstance(name, str):
                 _send({"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32602, "message": "Tool name must be a string"}})
+                return
+            if not isinstance(args, dict):
+                _send({"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32602, "message": "'arguments' must be an object"}})
                 return
             t0 = time.monotonic()
             try:
@@ -2466,9 +2567,15 @@ def _handle_request(msg: dict[str, Any], cancel_event: threading.Event) -> None:
                 CANCEL_EVENTS.pop(msg_id, None)
 
 
+def _is_valid_jsonrpc_id(val: Any) -> bool:
+    """Return True if val is a valid hashable JSON-RPC 2.0 request id (str or non-bool int)."""
+    return isinstance(val, (str, int)) and not isinstance(val, bool)
+
+
 def main() -> None:
     _configure_stdio()
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=16)
+    control_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
     try:
         for raw in sys.stdin:
             raw = raw.strip()
@@ -2476,7 +2583,7 @@ def main() -> None:
                 continue
             try:
                 msg = json.loads(raw)
-            except json.JSONDecodeError as exc:
+            except (json.JSONDecodeError, ValueError) as exc:
                 _send({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": f"Parse error: {exc}"}})
                 continue
             if not isinstance(msg, dict):
@@ -2484,16 +2591,26 @@ def main() -> None:
                 continue
 
             method = msg.get("method")
+            has_id = "id" in msg
             msg_id = msg.get("id")
+
+            if has_id and not _is_valid_jsonrpc_id(msg_id):
+                _send({
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {"code": -32600, "message": "Invalid Request: 'id' must be a string or integer"},
+                })
+                continue
 
             if method == "notifications/cancelled":
                 params = msg.get("params") or {}
                 if isinstance(params, dict) and "requestId" in params:
                     target_id = params["requestId"]
-                    with CANCEL_LOCK:
-                        ev = CANCEL_EVENTS.get(target_id)
-                    if ev is not None:
-                        ev.set()
+                    if _is_valid_jsonrpc_id(target_id):
+                        with CANCEL_LOCK:
+                            ev = CANCEL_EVENTS.get(target_id)
+                        if ev is not None:
+                            ev.set()
                 continue
 
             if method == "notifications/initialized":
@@ -2502,12 +2619,33 @@ def main() -> None:
             if msg_id is None:
                 continue
 
+            if not isinstance(method, str):
+                _send({
+                    "jsonrpc": "2.0",
+                    "id": msg_id,
+                    "error": {"code": -32600, "message": "Invalid Request: 'method' must be a string"},
+                })
+                continue
+
             cancel_event = threading.Event()
             with CANCEL_LOCK:
                 CANCEL_EVENTS[msg_id] = cancel_event
 
-            if method in ("initialize", "ping", "tools/list", "resources/list", "prompts/list"):
+            if method in (
+                "initialize",
+                "ping",
+                "tools/list",
+                "resources/list",
+                "resources/templates/list",
+                "prompts/list",
+            ):
                 _handle_request(msg, cancel_event)
+            elif (
+                method == "tools/call"
+                and isinstance(msg.get("params"), dict)
+                and msg["params"].get("name") == "codex_job_cancel"
+            ):
+                control_executor.submit(_handle_request, msg, cancel_event)
             else:
                 executor.submit(_handle_request, msg, cancel_event)
     finally:
@@ -2526,6 +2664,7 @@ def main() -> None:
         for proc, job_obj in to_terminate:
             _terminate_process_tree(proc, job_obj)
         APP_SERVER.close()
+        control_executor.shutdown(wait=False)
         executor.shutdown(wait=False)
 
 
