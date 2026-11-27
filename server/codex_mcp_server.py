@@ -38,7 +38,7 @@ from typing import Any
 
 CLIENT_INFO = {
     "name": "codex-bridge",
-    "version": "0.2.2",
+    "version": "0.2.3",
 }
 _MAX_SERVER_ICON_BYTES = 10_000
 _MAX_SERVER_INFO_JSON_CHARS = 15_500

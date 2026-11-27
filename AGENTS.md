@@ -6,9 +6,9 @@ Runtime delegation rules for *other* workspaces live in `rules/AGENTS.md` and `s
 ## Repository Layout
 
 - `assets/logo.png` & `assets/logo-96.png` — Transparent `512×512` PNG project logo (`< 256 KiB` for DSH compatibility) shared by READMEs and native plugin manifests, plus a `96×96` quantized PNG (`< 10 KiB`) inlined into MCP `serverInfo.icons` (`SERVER_INFO` `< 15.5k` chars) for Claude Desktop and MCP `2025-11-25` clients.
-- `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, `.mcp.json`, `claude/agents/codex-worker.md` — **Claude Code / Desktop** plugin manifests (`${CLAUDE_PLUGIN_ROOT}`, `codex-bridge` v`0.2.2`) and native Claude subagent (replaces auto-scanning Antigravity's `agents/`).
-- `package.json`, `cordis.patch.yml`, `locale/en.json`, `locale/zh.json` — **DSH-exclusive** native Cordis plugin bundle (`name: "codex-bridge"`, synced to v`0.2.2`), resolving Python and `server/codex_mcp_server.py` dynamically via `!!js` with duplicate `serverName` auto-guard, and auto-mounting `skills/` via `@deepseek-ai/dsh-skill-filesystem` (`includeDefaultRoots: false`, `bundledSkillDir`).
-- `plugin.json` & `mcp_config.json` — **Antigravity-exclusive** plugin manifest (`v0.2.2`) and MCP config (`${PLUGIN_ROOT}`). Do not add unsupported top-level fields.
+- `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, `.mcp.json`, `claude/agents/codex-worker.md` — **Claude Code / Desktop** plugin manifests (`${CLAUDE_PLUGIN_ROOT}`, `codex-bridge` v`0.2.3`) and native Claude subagent (replaces auto-scanning Antigravity's `agents/`).
+- `package.json`, `cordis.patch.yml`, `locale/en.json`, `locale/zh.json` — **DSH-exclusive** native Cordis plugin bundle (`name: "codex-bridge"`, synced to v`0.2.3`), resolving Python and `server/codex_mcp_server.py` dynamically via `!!js` with duplicate `serverName` auto-guard, and auto-mounting `skills/` via `@deepseek-ai/dsh-skill-filesystem` (`includeDefaultRoots: false`, `bundledSkillDir`).
+- `plugin.json` & `mcp_config.json` — **Antigravity-exclusive** plugin manifest (`v0.2.3`) and MCP config (`${PLUGIN_ROOT}`). Do not add unsupported top-level fields.
 - `server/codex_mcp_server.py` — Zero-dependency Python 3.10+ MCP stdio server exposing `codex_quota_status`, `codex_list_models`, `codex_exec`, `codex_review`, `codex_job_status`, and `codex_job_cancel`.
 - `skills/codex-delegate/SKILL.md` & `skills/codex-delegate/references/playbook.md` — Cross-agent delegation workflow and argument recipes.
 - `agents/codex_worker.md` — **Antigravity-exclusive** subagent persona (`codex_worker`).
