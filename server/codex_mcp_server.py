@@ -36,7 +36,7 @@ from typing import Any
 
 SERVER_INFO = {
     "name": "codex-bridge",
-    "version": "0.2.1",
+    "version": "0.2.2",
 }
 PROTOCOL_VERSION = "2024-11-05"
 SUPPORTED_PROTOCOL_VERSIONS = (

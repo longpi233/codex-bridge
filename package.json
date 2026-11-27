@@ -1,6 +1,6 @@
 {
   "name": "codex-bridge",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Zero-dependency, cross-platform MCP stdio bridge connecting DeepSeek Harness (DSH) and other AI agents to local OpenAI Codex CLI GPT models with live quota routing, code review, background jobs, and multimodal resume.",
   "type": "module",
   "license": "MIT",
